@@ -1,14 +1,12 @@
 # Gerasimos Lampouras, 2017:
-from Action import Action
-from copy import copy
-from imitation.structuredInstance import StructuredInstance, StructuredOutput, EvalStats
+from structuredPredictionNLG.Action import Action
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk import ngrams
-from FullDelexicalizator import covers_attr_E2E
+from structuredPredictionNLG.FullDelexicalizator import covers_attr_E2E
 '''
  This represents a single instance in the dataset. 
 '''
-class DatasetInstance(StructuredInstance):
+class DatasetInstance:
 
     def __init__(self, MR, directReferenceSequence, directReference):
         self.input = MR
@@ -145,7 +143,7 @@ def apply_non_monotonic_action(seq, non_monotonic_action):
         seq[int(components[1])] = components[2]
     return seq
 
-class NLGOutput(StructuredOutput):
+class NLGOutput:
     def __init__(self, MR):
         # References to be used during evaluation of this DatasetInstance
         self.evaluationReferences = set()
@@ -384,7 +382,7 @@ class NLGOutput(StructuredOutput):
         return evalStats
 
 # Then the NER eval stats
-class NLGEvalStats(EvalStats):
+class NLGEvalStats:
     def __init__(self):
         super().__init__()
         self.BLEU = 0

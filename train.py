@@ -20,6 +20,8 @@ import onmt.Models
 import onmt.ModelConstructor
 import onmt.modules
 from onmt.Utils import use_gpu, get_logger
+from onmt.translate.Translator import make_translator
+from structuredPredictionNLG.DatasetParser import DatasetParser
 import onmt.opts
 
 
@@ -27,12 +29,19 @@ parser = argparse.ArgumentParser(
     description='train.py',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
+parser.add_argument('dataset', type=str, choices=['e2e', 'webnlg', 'sfhotel'])
+parser.add_argument('--name', type=str, default='def')
+parser.add_argument('--trim', action='store_true', default=False)
+parser.add_argument('--full_delex', action='store_true', default=False)
+parser.add_argument('--infer_MRs', action='store_true', default=False)
+
 # onmt.opts.py
 onmt.opts.add_md_help_argument(parser)
 onmt.opts.model_opts(parser)
 onmt.opts.train_opts(parser)
 
 opt = parser.parse_args()
+opt.reset = False
 
 logger = get_logger(opt.log_file)
 
@@ -235,6 +244,15 @@ def make_loss_compute(model, tgt_vocab, opt, train=True):
 
 
 def train_model(model, fields, optim, data_type, model_opt):
+    translate_parser = argparse.ArgumentParser(
+        description='translate',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    onmt.opts.add_md_help_argument(translate_parser)
+    onmt.opts.translate_opts(translate_parser)
+    opt_translate = translate_parser.parse_args(args=[])
+    opt_translate.replace_unk = False
+    opt_translate.verbose = True
+
     train_loss = make_loss_compute(model, fields["tgt"].vocab, opt)
     valid_loss = make_loss_compute(model, fields["tgt"].vocab, opt,
                                    train=False)
@@ -286,9 +304,27 @@ def train_model(model, fields, optim, data_type, model_opt):
             logger.info("Decaying learning rate to %g" % trainer.optim.lr)
 
         # 5. Drop a checkpoint if needed.
-        if epoch >= opt.start_checkpoint_at:
+        if epoch % 10 == 0: #epoch >= opt.start_checkpoint_at:
             trainer.drop_checkpoint(model_opt, epoch, fields, valid_stats)
 
+            opt_translate.src = 'cache/valid_src_{:s}.txt'.format(opt.file_templ)
+            opt_translate.tgt = 'cache/valid_eval_refs_{:s}.txt'.format(opt.file_templ)
+            opt_translate.output = 'result/{:s}/valid_res_{:s}.txt'.format(opt.dataset, opt.file_templ)
+            opt_translate.model = '%s_acc_%.2f_ppl_%.2f_e%d.pt' % (
+            opt.save_model, valid_stats.accuracy(), valid_stats.ppl(), epoch)
+
+            check_save_result_path(opt_translate.output)
+
+            translator = make_translator(opt_translate, report_score=False, logger=logger)
+            translator.calc_sacre_bleu = False
+            translator.translate(opt_translate.src_dir, opt_translate.src, opt_translate.tgt, opt_translate.batch_size, opt_translate.attn_debug)
+
+
+def check_save_result_path(path):
+    save_result_path = os.path.abspath(path)
+    model_dirname = os.path.dirname(save_result_path)
+    if not os.path.exists(model_dirname):
+        os.makedirs(model_dirname)
 
 def check_save_model_path():
     save_model_path = os.path.abspath(opt.save_model)
@@ -330,13 +366,13 @@ def lazily_load_dataset(corpus_type):
         return dataset
 
     # Sort the glob output by file name (by increasing indexes).
-    pts = sorted(glob.glob(opt.data + '.' + corpus_type + '.[0-9]*.pt'))
+    pts = sorted(glob.glob(opt.data + opt.file_templ + '.' + corpus_type + '.[0-9]*.pt'))
     if pts:
         for pt in pts:
             yield lazy_dataset_loader(pt, corpus_type)
     else:
         # Only one onmt.io.*Dataset, simple!
-        pt = opt.data + '.' + corpus_type + '.pt'
+        pt = opt.data + opt.file_templ + '.' + corpus_type + '.pt'
         yield lazy_dataset_loader(pt, corpus_type)
 
 
@@ -347,7 +383,7 @@ def load_fields(dataset, data_type, checkpoint):
             checkpoint['vocab'], data_type)
     else:
         fields = onmt.io.load_fields_from_vocab(
-            torch.load(opt.data + '.vocab.pt'), data_type)
+            torch.load(opt.data + opt.file_templ + '.vocab.pt'), data_type)
     fields = dict([(k, f) for (k, f) in fields.items()
                    if k in dataset.examples[0].__dict__])
 
@@ -469,44 +505,58 @@ def show_optimizer_state(optim):
 
 
 def main():
-    # Load checkpoint if we resume from a previous training.
-    if opt.train_from:
-        logger.info('Loading checkpoint from %s' % opt.train_from)
-        checkpoint = torch.load(opt.train_from,
-                                map_location=lambda storage, loc: storage)
-        model_opt = checkpoint['opt']
-        # I don't like reassigning attributes of opt: it's not clear.
-        opt.start_epoch = checkpoint['epoch'] + 1
-        model_opt.save_model = opt.save_model
-    else:
-        checkpoint = None
-        model_opt = opt
+    # load the training data!
+    if opt.dataset.lower() == 'e2e':
+        parser = DatasetParser('data/e2e/trainset.csv', 'data/e2e/devset.csv', 'data/e2e/testset_w_refs.csv', 'E2E', opt)
+    elif opt.dataset.lower() == 'webnlg':
+        parser = DatasetParser('data/webNLG_challenge_data/train', 'data/webNLG_challenge_data/dev', False, 'webNLG', opt)
+    elif opt.dataset.lower() == 'sfhotel':
+        parser = DatasetParser('data/sfx_data/sfxhotel/train.json', 'data/sfx_data/sfxhotel/valid.json', 'data/sfx_data/sfxhotel/test.json', 'SFHotel', opt)
 
-    # Peek the fisrt dataset to determine the data_type.
-    # (All datasets have the same data_type).
-    first_dataset = next(lazily_load_dataset("train"))
-    data_type = first_dataset.data_type
+    opt.data = 'save_data/{:s}/'.format(opt.dataset)
+    gen_templ = parser.get_onmt_file_templ(opt)
 
-    # Load fields generated from preprocess phase.
-    fields = load_fields(first_dataset, data_type, checkpoint)
+    for predicate in parser.predicates:
+        opt.file_templ = gen_templ.format(predicate)
+        opt.save_model = 'save_model/{:s}/{:s}'.format(opt.dataset, predicate)
+        # Load checkpoint if we resume from a previous training.
+        if opt.train_from:
+            logger.info('Loading checkpoint from %s' % opt.train_from)
+            checkpoint = torch.load(opt.train_from,
+                                    map_location=lambda storage, loc: storage)
+            model_opt = checkpoint['opt']
+            # I don't like reassigning attributes of opt: it's not clear.
+            opt.start_epoch = checkpoint['epoch'] + 1
+            model_opt.save_model = opt.save_model
+        else:
+            checkpoint = None
+            model_opt = opt
 
-    # Report src/tgt features.
-    collect_report_features(fields)
+        # Peek the fisrt dataset to determine the data_type.
+        # (All datasets have the same data_type).
+        first_dataset = next(lazily_load_dataset("train"))
+        data_type = first_dataset.data_type
 
-    # Build model.
-    model = build_model(model_opt, opt, fields, checkpoint)
-    tally_parameters(model)
-    check_save_model_path()
+        # Load fields generated from preprocess phase.
+        fields = load_fields(first_dataset, data_type, checkpoint)
 
-    # Build optimizer.
-    optim = build_optim(model, checkpoint)
+        # Report src/tgt features.
+        collect_report_features(fields)
 
-    # Do training.
-    train_model(model, fields, optim, data_type, model_opt)
+        # Build model.
+        model = build_model(model_opt, opt, fields, checkpoint)
+        tally_parameters(model)
+        check_save_model_path()
 
-    # If using tensorboard for logging, close the writer after training.
-    if opt.tensorboard:
-        writer.close()
+        # Build optimizer.
+        optim = build_optim(model, checkpoint)
+
+        # Do training.
+        train_model(model, fields, optim, data_type, model_opt)
+
+        # If using tensorboard for logging, close the writer after training.
+        if opt.tensorboard:
+            writer.close()
 
 
 if __name__ == "__main__":

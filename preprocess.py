@@ -5,12 +5,14 @@ import argparse
 import os
 import glob
 import sys
+import random
 
 import torch
 
 import onmt.io
 import onmt.opts
 from onmt.Utils import get_logger
+from structuredPredictionNLG.DatasetParser import DatasetParser
 
 
 def check_existing_pt_files(opt):
@@ -30,10 +32,24 @@ def parse_args():
         description='preprocess.py',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
+    parser.add_argument('dataset', type=str, choices=['e2e', 'webnlg', 'sfhotel'])
+    parser.add_argument('--name', type=str, default='def')
+    parser.add_argument('--trim', action='store_true', default=False)
+    parser.add_argument('--full_delex', action='store_true', default=False)
+    parser.add_argument('--reset', action='store_true', default=False)
+    parser.add_argument('--infer_MRs', action='store_true', default=False)
+
     onmt.opts.add_md_help_argument(parser)
     onmt.opts.preprocess_opts(parser)
 
     opt = parser.parse_args()
+    opt.save_data = 'save_data/{:s}/'.format(opt.dataset)
+
+    save_data_path = os.path.abspath(opt.save_data)
+    model_dirname = os.path.dirname(save_data_path)
+    if not os.path.exists(model_dirname):
+        os.makedirs(model_dirname)
+
     torch.manual_seed(opt.seed)
 
     check_existing_pt_files(opt)
@@ -105,11 +121,11 @@ def build_save_text_dataset_in_shards(src_corpus, tgt_corpus, fields,
         # We save fields in vocab.pt seperately, so make it empty.
         dataset.fields = []
 
-        pt_file = "{:s}.{:s}.{:d}.pt".format(
-            opt.save_data, corpus_type, index)
+        pt_file = "{:s}{:s}.{:s}.{:d}.pt".format(
+            opt.save_data, opt.file_templ, corpus_type, index)
         if logger:
             logger.info(" * saving %s data shard to %s."
-                        % (corpus_type, pt_file))
+                        % (opt.file_templ, corpus_type, pt_file))
         torch.save(dataset, pt_file)
 
         ret_list.append(pt_file)
@@ -153,7 +169,7 @@ def build_save_dataset(corpus_type, fields, opt, logger=None):
     # We save fields in vocab.pt seperately, so make it empty.
     dataset.fields = []
 
-    pt_file = "{:s}.{:s}.pt".format(opt.save_data, corpus_type)
+    pt_file = "{:s}.{:s}{:s}.pt".format(opt.save_data, opt.file_templ, corpus_type)
     if logger:
         logger.info(" * saving %s dataset to %s." % (corpus_type, pt_file))
     torch.save(dataset, pt_file)
@@ -173,7 +189,7 @@ def build_save_vocab(train_dataset, fields, opt, logger=None):
                                  logger)
 
     # Can't save fields, so remove/reconstruct at training time.
-    vocab_file = opt.save_data + '.vocab.pt'
+    vocab_file = opt.save_data + opt.file_templ + '.vocab.pt'
     torch.save(onmt.io.save_fields_to_vocab(fields), vocab_file)
 
 
@@ -182,23 +198,67 @@ def main():
     logger = get_logger(opt.log_file)
     logger.info("Extracting features...")
 
-    src_nfeats = onmt.io.get_num_features(opt.data_type, opt.train_src, 'src')
-    tgt_nfeats = onmt.io.get_num_features(opt.data_type, opt.train_tgt, 'tgt')
-    logger.info(" * number of source features: %d." % src_nfeats)
-    logger.info(" * number of target features: %d." % tgt_nfeats)
+    random.seed(13)
 
-    logger.info("Building `Fields` object...")
-    fields = onmt.io.get_fields(opt.data_type, src_nfeats, tgt_nfeats)
+    # load the training data!
+    if opt.dataset.lower() == 'e2e':
+        parser = DatasetParser('data/e2e/trainset.csv', 'data/e2e/devset.csv', 'data/e2e/testset_w_refs.csv', 'E2E', opt)
 
-    logger.info("Building & saving training data...")
-    train_dataset_files = build_save_dataset('train', fields, opt, logger)
+        if opt.name.lower() != 'def':
+            parser.dataset_name = opt.name.lower()
+        for predicate in parser.trainingInstances:
+            random.shuffle(parser.trainingInstances[predicate])
+    elif opt.dataset.lower() == 'webnlg':
+        parser = DatasetParser('data/webNLG_challenge_data/train', 'data/webNLG_challenge_data/dev', False, 'webNLG', opt)
 
-    logger.info("Building & saving vocabulary...")
-    build_save_vocab(train_dataset_files, fields, opt, logger)
+        if opt.name.lower() != 'def':
+            parser.dataset_name = opt.name.lower()
+        for predicate in parser.trainingInstances:
+            random.shuffle(parser.trainingInstances[predicate])
+    elif opt.dataset.lower() == 'sfhotel':
+        parser = DatasetParser('data/sfx_data/sfxhotel/train.json', 'data/sfx_data/sfxhotel/valid.json', 'data/sfx_data/sfxhotel/test.json', 'SFHotel', opt)
 
-    logger.info("Building & saving validation data...")
-    build_save_dataset('valid', fields, opt, logger)
+        if opt.name.lower() != 'def':
+            parser.dataset_name = opt.name.lower()
+        for predicate in parser.trainingInstances:
+            random.shuffle(parser.trainingInstances[predicate])
 
+    gen_templ = parser.get_onmt_file_templ(opt)
+    train_src_templ, train_tgt_templ, train_eval_refs_templ, valid_src_templ, valid_tgt_templ, valid_eval_refs_templ, test_src_templ, test_tgt_templ, test_eval_refs_templ = parser.get_onmt_file_templs(gen_templ)
+    for predicate in parser.predicates:
+        opt.file_templ = gen_templ.format(predicate)
+        opt.train_src = train_src_templ.format(predicate)
+        opt.train_tgt = train_tgt_templ.format(predicate)
+        opt.valid_src = valid_src_templ.format(predicate)
+        opt.valid_tgt = valid_tgt_templ.format(predicate)
+
+        src_nfeats = onmt.io.get_num_features(opt.data_type, opt.train_src, 'src')
+        tgt_nfeats = onmt.io.get_num_features(opt.data_type, opt.train_tgt, 'tgt')
+        logger.info(" * number of source features: %d." % src_nfeats)
+        logger.info(" * number of target features: %d." % tgt_nfeats)
+
+        logger.info("Building {} `Fields` object...".format(predicate))
+        fields = onmt.io.get_fields(opt.data_type, src_nfeats, tgt_nfeats)
+
+        logger.info("Building & saving {} training data...".format(predicate))
+        train_dataset_files = build_save_dataset('train', fields, opt, logger)
+
+        logger.info("Building & saving {} vocabulary...".format(predicate))
+        build_save_vocab(train_dataset_files, fields, opt, logger)
+
+        logger.info("Building & saving {} validation data...".format(predicate))
+        build_save_dataset('valid', fields, opt, logger)
+
+    if parser.trainingInstances:
+        for predicate in parser.trainingInstances:
+            print("Training data size for {}: {}".format(predicate, len(parser.trainingInstances[predicate])))
+    if parser.developmentInstances:
+        for predicate in parser.developmentInstances:
+            print("Validation data size for {}: {}".format(predicate, len(parser.developmentInstances[predicate])))
+    if parser.testingInstances:
+        for predicate in parser.testingInstances:
+            print("Test data size for {}: {}".format(predicate, len(parser.testingInstances[predicate])))
+    print("-----------------------")
 
 if __name__ == "__main__":
     main()

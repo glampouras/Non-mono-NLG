@@ -1,4 +1,4 @@
-from Action import Action
+from structuredPredictionNLG.Action import Action
 
 phrases = {}
 phrases['area'] = [" river ", " city centre ", " centre of the city ", "center of the city", " city center ", "center of town", " riverside ", " city area ", " city "]

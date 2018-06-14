@@ -1,22 +1,14 @@
 # Gerasimos Lampouras, 2017:
-from Action import Action
-from MeaningRepresentation import MeaningRepresentation
-from DatasetInstance import DatasetInstance, cleanAndGetAttr, lexicalize_word_sequence
-from imitation.imitationLearner import ImitationLearner
-from FullDelexicalizator import full_delexicalize_E2E
+from structuredPredictionNLG.Action import Action
+from structuredPredictionNLG.MeaningRepresentation import MeaningRepresentation
+from structuredPredictionNLG.DatasetInstance import DatasetInstance, cleanAndGetAttr, lexicalize_word_sequence
+from structuredPredictionNLG.FullDelexicalizator import full_delexicalize_E2E
 from collections import Counter
-from simpleLM.SimpleLM import SimpleLM
-from queue import Queue
-from SimpleContentPredictor import SimpleContentPredictor
-from NLGState import NLGState
 import os.path
 import re
 import Levenshtein
 import _pickle as pickle
-import numpy
-from collections import defaultdict
 import json
-import random
 import xml.etree.ElementTree as ET
 import string
 from dateutil import parser as dateparser
@@ -28,21 +20,18 @@ from nltk.util import ngrams
  A descendant of this class will need to be creater for every specific dataset
  (to deal with dataset-specific formats)
 '''
-class DatasetParser(object):
+class DatasetParser:
 
-    def __init__(self, trainingFile, developmentFile, testingFile, dataset, datasetID, trim, full_delex, infer_MRs, reset=False):
-        self.base_dir = '../'
-        # self.base_dir = ''
+    def __init__(self, trainingFile, developmentFile, testingFile, dataset, opt):
+        # self.base_dir = '../'
+        self.base_dir = ''
 
         self.dataset = dataset
-        self.dataset_name = datasetID
+        self.dataset_name = opt.name
 
         self.trainingInstances = {}
         self.developmentInstances = {}
         self.testingInstances = {}
-
-        self.contentLMs_perPredicate = {}
-        self.wordLMs_perPredicate = {}
 
         self.trainingInstances = False
         self.developmentInstances = False
@@ -55,13 +44,15 @@ class DatasetParser(object):
         self.availableWordActions = {}
         self.availableWordCounts = {}
 
-        self.trim = trim
+        self.trim = opt.trim
 
         self.ngram_lists_per_word_sequence = {}
         self.ngram_lists_per_relexed_word_sequence = {}
         self.total_relexed_ngram_lists = set()
 
-        if (reset or not self.loadTrainingLists(trim, full_delex, infer_MRs)) and trainingFile:
+        self.check_cache_path()
+
+        if (opt.reset or not self.loadTrainingLists(opt.trim, opt.full_delex, opt.infer_MRs)) and trainingFile:
             self.predicates = []
             self.attributes = {}
             self.valueAlignments = {}
@@ -69,8 +60,9 @@ class DatasetParser(object):
 
             self.maxWordSequenceLength = 0
 
-            self.trainingInstances = self.createLists(self.base_dir + trainingFile, forTrain=True, full_delex=full_delex, infer_MRs=infer_MRs)
+            self.trainingInstances = self.createLists(self.base_dir + trainingFile, forTrain=True, full_delex=opt.full_delex, infer_MRs=opt.infer_MRs)
 
+            # Post-processing of training data begins
             for predicate in self.trainingInstances:
                 for di in self.trainingInstances[predicate]:
                     for attr in di.input.attributeValues:
@@ -102,9 +94,10 @@ class DatasetParser(object):
                             self.ngram_lists_per_word_sequence[refSeqTxt] = self.get_ngram_list(refSeq)
 
             self.initializeActionSpace()
-            if trim:
-                self.trimTrainingSpace(SimpleContentPredictor(self.dataset, self.attributes, self.trainingInstances))
+            if opt.trim:
+                self.trimTrainingSpace()
                 # Initializing the action space again after trimming results in less actions
+                self.initializeActionSpace()
 
             self.vocabulary_per_attr = {}
             for predicate in self.attributes:
@@ -125,7 +118,7 @@ class DatasetParser(object):
                         if ref not in self.ngram_lists_per_relexed_word_sequence:
                             self.ngram_lists_per_relexed_word_sequence[ref] = self.get_ngram_list(refSeq)
 
-            self.writeTrainingLists(trim, full_delex, infer_MRs)
+            self.writeTrainingLists(opt.trim, opt.full_delex, opt.infer_MRs)
         else:
             self.initializeActionSpace()
 
@@ -153,8 +146,8 @@ class DatasetParser(object):
                         #else:
                         #    total_relexed_ngram_lists_tmp.add(n_gram)
 
-        if (reset or not self.loadDevelopmentLists(full_delex)) and developmentFile:
-            devs = self.createLists(self.base_dir + developmentFile, full_delex=full_delex)
+        if (opt.reset or not self.loadDevelopmentLists(opt.full_delex)) and developmentFile:
+            devs = self.createLists(self.base_dir + developmentFile, full_delex=opt.full_delex)
             # Create the evaluation refs for development data, as described in https://github.com/tuetschek/e2e-metrics/tree/master/example-inputs
             self.developmentInstances = {}
             for predicate in devs:
@@ -178,7 +171,7 @@ class DatasetParser(object):
                     di.output.calcEvaluationReferenceAttrValueSequences()
 
                     self.developmentInstances[predicate].append(di)
-            self.writeDevelopmentLists(full_delex)
+            self.writeDevelopmentLists(opt.full_delex)
 
             for predicate in self.developmentInstances:
                 for di in self.developmentInstances[predicate]:
@@ -194,9 +187,9 @@ class DatasetParser(object):
                     if di.input.attributeSubjects:
                         for attr in di.input.attributeSubjects:
                             self.available_subjects.add(di.input.attributeSubjects[attr])
-            self.writeTrainingLists(trim, full_delex, infer_MRs)
-        if (reset or not self.loadTestingLists(full_delex)) and testingFile:
-            tests = self.createLists(self.base_dir + testingFile, full_delex=full_delex)
+            self.writeTrainingLists(opt.trim, opt.full_delex, opt.infer_MRs)
+        if (opt.reset or not self.loadTestingLists(opt.full_delex)) and testingFile:
+            tests = self.createLists(self.base_dir + testingFile, full_delex=opt.full_delex)
 
             self.testingInstances = {}
             for predicate in tests:
@@ -223,9 +216,9 @@ class DatasetParser(object):
                     di.output.calcEvaluationReferenceAttrValueSequences()
 
                     self.testingInstances[predicate].append(di)
-            self.writeTestingLists(full_delex)
+            self.writeTestingLists(opt.full_delex)
 
-        self.write_onmt_data(trim, full_delex, infer_MRs)
+        self.write_onmt_data(opt)
 
     def get_ngram_list(self, word_sequence, min=1):
         ngram_list = []
@@ -568,7 +561,8 @@ class DatasetParser(object):
                         del MR.attributeValues[attr]
                 MR.getAbstractMR(True)
             if (MR.attributeValues.keys() == set(alingedAttributes) and (not full_delex or len(MR.attributeValues.keys()) == len(alingedAttributes))) or not forTrain:
-                directReferenceSequence = inferNaiveAlignments(MR, directReferenceSequence)
+                if forTrain:
+                    directReferenceSequence = inferNaiveAlignments(MR, directReferenceSequence)
                 DI = DatasetInstance(MR, directReferenceSequence, self.postProcessRef(MR, directReferenceSequence))
                 instances[singlePredicate].append(DI)
         return instances
@@ -861,8 +855,9 @@ class DatasetParser(object):
                                         unalignedRange = False
                                 if unalignedRange:
                                     for i in range(bestGramPos[0], bestGramPos[1] + 1):
-                                        directReferenceSequence[i].attribute = valueToAttr[bestValue]
-                                        alingedAttributes.append(directReferenceSequence[i].attribute)
+                                        if valueToAttr[bestValue] != 'none':
+                                            directReferenceSequence[i].attribute = valueToAttr[bestValue]
+                                            alingedAttributes.append(directReferenceSequence[i].attribute)
                                     if forTrain:
                                         # Store the best aligned nGram
                                         if bestValue not in self.valueAlignments.keys():
@@ -881,9 +876,13 @@ class DatasetParser(object):
                             alingedAttributes.append(action.attribute)
 
                 passport = True
-                if not forTrain or len(MR.attributeValues.keys()) == len(alingedAttributes):
+                mr_attr_count = 0
+                for attr in MR.attributeValues:
+                    if attr != 'none':
+                        mr_attr_count += 1
+                if not forTrain or mr_attr_count == len(alingedAttributes):
                     for attr in MR.attributeValues:
-                        if '_' not in MR.attributeValues[attr] and 'none' not in MR.attributeValues[attr]:
+                        if attr != 'none' and '_' not in MR.attributeValues[attr] and 'none' not in MR.attributeValues[attr]:
                             passport = False
                             if not forTrain:
                                 delexSubject = Action.TOKEN_X + attr + "_0"
@@ -1152,7 +1151,8 @@ class DatasetParser(object):
 
                             # If not all attributes are aligned, ignore the instance from training?
                             # Alternatively, we could align them randomly; certainly not ideal, but usually it concerns edge cases
-                            directReferenceSequence = inferNaiveAlignments(MR, directReferenceSequence)
+                            if forTrain:
+                                directReferenceSequence = inferNaiveAlignments(MR, directReferenceSequence)
                             DI = DatasetInstance(MR, directReferenceSequence, self.postProcessRef(MR, directReferenceSequence))
                             instances[singlePredicate].append(DI)
 
@@ -1322,6 +1322,12 @@ class DatasetParser(object):
             return norms
         except ValueError:
             return set()
+
+    def check_cache_path(self):
+        save_cache_path = os.path.abspath('cache/')
+        model_dirname = os.path.dirname(save_cache_path)
+        if not os.path.exists(model_dirname):
+            os.makedirs(model_dirname)
 
     def loadTrainingLists(self, trim, full_delex, infer_MRs):
         print("Attempting to load training data...")
@@ -1508,42 +1514,74 @@ class DatasetParser(object):
         with open(self.base_dir + 'cache/ngramListsPerRelexedWordSequence_' + fileSuffix, 'wb') as handle:
             pickle.dump(self.ngram_lists_per_relexed_word_sequence, handle)
 
-    def write_onmt_data(self, trim, full_delex, infer_MRs):
+    def write_onmt_data(self, opt):
         print("Writing onmt training data...")
+        gen_templ = self.get_onmt_file_templ(opt)
+        train_src_templ, train_tgt_templ, train_eval_refs_templ, valid_src_templ, valid_tgt_templ, valid_eval_refs_templ, test_src_templ, test_tgt_templ, test_eval_refs_templ = self.get_onmt_file_templs(gen_templ)
 
-        if trim:
+        for predicate in self.predicates:
+            if predicate in self.trainingInstances:
+                with open(train_src_templ.format(predicate), 'w') as handle:
+                    handle.writelines(["%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]) for item in self.trainingInstances[predicate]])
+                with open(train_tgt_templ.format(predicate), 'w') as handle:
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.trainingInstances[predicate]])
+                with open(train_eval_refs_templ.format(predicate), 'w') as handle:
+                    for di in self.trainingInstances[predicate]:
+                        handle.writelines(["%s\n" % item for item
+                                           in di.output.evaluationReferences])
+                        handle.writelines(["\n"])
+
+            if predicate in self.developmentInstances:
+                with open(valid_src_templ.format(predicate), 'w') as handle:
+                    handle.writelines(["%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]) for item in self.developmentInstances[predicate]])
+                with open(valid_tgt_templ.format(predicate), 'w') as handle:
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.developmentInstances[predicate]])
+                with open(valid_eval_refs_templ.format(predicate), 'w') as handle:
+                    for di in self.developmentInstances[predicate]:
+                        handle.writelines(["%s\n" % item for item
+                                           in di.output.evaluationReferences])
+                        handle.writelines(["\n"])
+
+            if predicate in self.testingInstances:
+                with open(test_src_templ.format(predicate), 'w') as handle:
+                    handle.writelines(["%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]) for item in self.testingInstances[predicate]])
+                with open(test_tgt_templ.format(predicate), 'w') as handle:
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.testingInstances[predicate]])
+                with open(test_eval_refs_templ.format(predicate), 'w') as handle:
+                    for di in self.testingInstances[predicate]:
+                        handle.writelines(["%s\n" % item for item
+                                           in di.output.evaluationReferences])
+                        handle.writelines(["\n"])
+
+    def get_onmt_file_templ(self, opt):
+        if opt.trim:
             trim = 'true'
         else:
             trim = 'false'
-        if full_delex:
+        if opt.full_delex:
             full_delex = 'true'
         else:
             full_delex = 'false'
 
-        if infer_MRs:
-            fileSuffix = self.dataset_name + '_trim=' + str(trim) + '_full_delex=' + str(
-                full_delex) + '_inferMRs=True.txt'
+        if opt.infer_MRs:
+            fileSuffix = self.dataset_name + '_trim=' + str(trim) + '_full_delex=' + str(full_delex) + '_inferMRs=True'
         else:
-            fileSuffix = self.dataset_name + '_trim=' + str(trim) + '_full_delex=' + str(full_delex) + '.txt'
+            fileSuffix = self.dataset_name + '_trim=' + str(trim) + '_full_delex=' + str(full_delex)
 
-        for predicate in self.predicates:
-            if predicate in self.trainingInstances:
-                with open(self.base_dir + 'cache/train_src_{}_{}'.format(predicate, fileSuffix), 'w') as handle:
-                    handle.writelines(["%s\n" % "{} {} {}".format(Action.TOKEN_GO, " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]), Action.TOKEN_END) for item in self.trainingInstances[predicate]])
-                with open(self.base_dir + 'cache/train_tgt_{}_{}'.format(predicate, fileSuffix), 'w') as handle:
-                    handle.writelines(["%s\n" % "{} {} {}".format(Action.TOKEN_GO, " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]), Action.TOKEN_END) for item in self.trainingInstances[predicate]])
+        return '{:s}_{:s}'.format('{:s}', fileSuffix)
 
-            if predicate in self.developmentInstances:
-                with open(self.base_dir + 'cache/valid_src_{}_{}'.format(predicate, fileSuffix), 'w') as handle:
-                    handle.writelines(["%s\n" % "{} {} {}".format(Action.TOKEN_GO, " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]), Action.TOKEN_END) for item in self.developmentInstances[predicate]])
-                with open(self.base_dir + 'cache/valid_tgt_{}_{}'.format(predicate, fileSuffix), 'w') as handle:
-                    handle.writelines(["%s\n" % "{} {} {}".format(Action.TOKEN_GO, " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]), Action.TOKEN_END) for item in self.developmentInstances[predicate]])
+    def get_onmt_file_templs(self, gen_templ):
+        train_src_templ = '{:s}cache/train_src_{:s}.txt'.format(self.base_dir, gen_templ)
+        train_tgt_templ = '{:s}cache/train_tgt_{:s}.txt'.format(self.base_dir, gen_templ)
+        train_eval_refs_templ = '{:s}cache/train_eval_refs_{:s}.txt'.format(self.base_dir, gen_templ)
+        valid_src_templ = '{:s}cache/valid_src_{:s}.txt'.format(self.base_dir, gen_templ)
+        valid_tgt_templ = '{:s}cache/valid_tgt_{:s}.txt'.format(self.base_dir, gen_templ)
+        valid_eval_refs_templ = '{:s}cache/valid_eval_refs_{:s}.txt'.format(self.base_dir, gen_templ)
+        test_src_templ = '{:s}cache/test_src_{:s}.txt'.format(self.base_dir, gen_templ)
+        test_tgt_templ = '{:s}cache/test_tgt_{:s}.txt'.format(self.base_dir, gen_templ)
+        test_eval_refs_templ = '{:s}cache/test_eval_refs_{:s}.txt'.format(self.base_dir, gen_templ)
 
-            if predicate in self.testingInstances:
-                with open(self.base_dir + 'cache/test_src_{}_{}'.format(predicate, fileSuffix), 'w') as handle:
-                    handle.writelines(["%s\n" % "{} {} {}".format(Action.TOKEN_GO, " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]), Action.TOKEN_END) for item in self.testingInstances[predicate]])
-                with open(self.base_dir + 'cache/test_tgt_{}_{}'.format(predicate, fileSuffix), 'w') as handle:
-                    handle.writelines(["%s\n" % "{} {} {}".format(Action.TOKEN_GO, " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]), Action.TOKEN_END) for item in self.testingInstances[predicate]])
+        return train_src_templ, train_tgt_templ, train_eval_refs_templ, valid_src_templ, valid_tgt_templ, valid_eval_refs_templ, test_src_templ, test_tgt_templ, test_eval_refs_templ
 
     def writeDevelopmentLists(self, full_delex):
         print("Writing development data...")
@@ -1567,12 +1605,6 @@ class DatasetParser(object):
         with open(self.base_dir + 'cache/testingInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'wb') as handle:
             pickle.dump(self.testingInstances, handle)
 
-    def writeLanguageModels(self):
-        print("Writing language models...")
-        with open(self.base_dir + 'cache/contentLM_' + self.dataset_name + '.pickle', 'wb') as handle:
-            pickle.dump(self.contentLMs_perPredicate, handle)
-        with open(self.base_dir + 'cache/wordLM_' + self.dataset_name + '.pickle', 'wb') as handle:
-            pickle.dump(self.wordLMs_perPredicate, handle)
 
     @staticmethod
     def postProcessRef(mr, refSeq, punct=True):
@@ -1595,7 +1627,7 @@ class DatasetParser(object):
             if [o.label for o in l[ind:ind + sll]] == [r.label for r in sl]:
                 return ind, ind + sll - 1
 
-    def trimTrainingSpace(self, contentPredictor):
+    def trimTrainingSpace(self):
         # Keep only unique training data
         # Need to keep only one direct ref, we chose the one with 1) the most attrsvalues expressed, 2) most variables, and 3) the greatest avg. word freq
         for predicate in self.trainingInstances:
@@ -1608,66 +1640,48 @@ class DatasetParser(object):
             for uniqueMR in uniqueTrainingMRs:
                 # Keep the dis that follow the most probable sequence of attrValues
 
-                content_sequence = contentPredictor.rollContentSequence_withLearnedPolicy(uniqueTrainingMRs[uniqueMR][0])
-                agenda_attributes = [o.attribute for o in content_sequence if o.attribute != Action.TOKEN_SHIFT]
-
-                followingDIs = set()
+                # keep the di whose direct reference's words have the greatest frequency
+                bestDIs = set()
+                mostVars = 0
                 for di in uniqueTrainingMRs[uniqueMR]:
-                    currentAttr = ""
-                    ref_attributes = []
-                    for act in di.directReferenceSequence:
-                        if act.attribute != currentAttr and act.label != Action.TOKEN_GO and act.attribute != Action.TOKEN_SHIFT:
-                            ref_attributes.append(act.attribute)
-                            currentAttr = act.attribute
-                    if ref_attributes == agenda_attributes:
-                        followingDIs.add(di)
+                    vars = 0
+                    str = " ".join([o.label for o in di.directReferenceSequence])
+                    str = " " + str + " "
+                    for v in di.input.attributeValues.values():
+                        if v in str:
+                            vars += 1
+                        if v.endswith('_no') and (' no ' in str or ' not ' in str or " n't " in str):
+                            vars += 1
+                    if vars > mostVars:
+                        mostVars = vars
+                        bestDIs = set()
+                    if vars == mostVars:
+                        bestDIs.add(di)
 
-                if len(followingDIs) == 1:
-                    for di in followingDIs:
+                if len(bestDIs) == 1:
+                    for di in bestDIs:
                         uniqueTrainingInstances.append(di)
                 else:
-                    # keep the di whose direct reference's words have the greatest frequency
-                    bestDIs = set()
-                    mostVars = 0
-                    for di in followingDIs:
-                        vars = 0
-                        str = " ".join([o.label for o in di.directReferenceSequence])
-                        str = " " + str + " "
-                        for v in di.input.attributeValues.values():
-                            if v in str:
-                                vars += 1
-                            if v.endswith('_no') and (' no ' in str or ' not ' in str or " n't " in str):
-                                vars += 1
-                        if vars > mostVars:
-                            mostVars = vars
-                            bestDIs = set()
-                        if vars == mostVars:
-                            bestDIs.add(di)
-
-                    if len(bestDIs) == 1:
-                        for di in bestDIs:
-                            uniqueTrainingInstances.append(di)
-                    else:
-                        bestDI = False
-                        maxAvgFreq = 0.0
-                        for datasetInstance in bestDIs:
-                            avgFreq = 0.0
-                            total = 0.0
-                            for a in datasetInstance.directReferenceSequence:
-                                if a.label != Action.TOKEN_SHIFT:
-                                    avgFreq += self.availableWordCounts[predicate][a.label]
-                                    total += 1.0
-                            if total != 0.0:
-                                avgFreq /= total
-                            if avgFreq >= maxAvgFreq:
-                                maxAvgFreq = avgFreq
-                                bestDI = datasetInstance
-                        if bestDI:
-                            uniqueTrainingInstances.append(bestDI)
-                        #else:
-                        #    print("Couldn't find appropriate DI")
-                        #    print(uniqueMR)
-                        #    print(uniqueTrainingMRs[uniqueMR])
+                    bestDI = False
+                    maxAvgFreq = 0.0
+                    for datasetInstance in bestDIs:
+                        avgFreq = 0.0
+                        total = 0.0
+                        for a in datasetInstance.directReferenceSequence:
+                            if a.label != Action.TOKEN_SHIFT:
+                                avgFreq += self.availableWordCounts[predicate][a.label]
+                                total += 1.0
+                        if total != 0.0:
+                            avgFreq /= total
+                        if avgFreq >= maxAvgFreq:
+                            maxAvgFreq = avgFreq
+                            bestDI = datasetInstance
+                    if bestDI:
+                        uniqueTrainingInstances.append(bestDI)
+                    #else:
+                    #    print("Couldn't find appropriate DI")
+                    #    print(uniqueMR)
+                    #    print(uniqueTrainingMRs[uniqueMR])
 
             self.trainingInstances[predicate] = uniqueTrainingInstances[:]
             print("Trimmed training data size for {}: {}".format(predicate, len(self.trainingInstances[predicate])))
@@ -1698,29 +1712,6 @@ class DatasetParser(object):
                 print("{}:{} action count: {}".format(predicate, attr, len(self.availableWordActions[predicate][attr])))
             print("-----------------------")
 
-    def initializeLanguageModels(self, reset = False):
-        if reset or not self.loadLanguageModels():
-            self.contentLMs_perPredicate = {}
-            self.wordLMs_perPredicate = {}
-            for predicate in self.trainingInstances:
-                self.contentLMs_perPredicate[predicate] = SimpleLM(3)
-                self.wordLMs_perPredicate[predicate] = SimpleLM(3)
-
-                contentTrainSeqs = []
-                wordTrainSeqs = []
-                for di in self.trainingInstances[predicate]:
-                    contentTrainSeq = ["@@", "@@", "@@", "@@"]
-                    contentTrainSeq.extend([o for o in di.directAttrValueSequence])
-                    contentTrainSeqs.append(contentTrainSeq)
-
-                    wordTrainSeq = ["@@", "@@", "@@", "@@"]
-                    wordTrainSeq.extend([o.label for o in di.directReferenceSequence if o.label != Action.TOKEN_SHIFT])
-                    wordTrainSeq.append(Action.TOKEN_SHIFT)
-                    wordTrainSeqs.append(wordTrainSeq)
-
-                self.contentLMs_perPredicate[predicate].trainOnSequences(contentTrainSeqs)
-                self.wordLMs_perPredicate[predicate].trainOnSequences(wordTrainSeqs)
-            self.writeLanguageModels()
 
 def inferNaiveAlignments(meaning_representation, sequence):
     attrSeq = [o.attribute for o in sequence]
@@ -1822,194 +1813,3 @@ def inferNaiveAlignments(meaning_representation, sequence):
         currentAttr = act.attribute
     sequence.append(Action(Action.TOKEN_SHIFT, Action.TOKEN_SHIFT, "word"))
     return sequence
-
-
-if __name__ == '__main__':
-    import argparse
-    argparser = argparse.ArgumentParser()
-    argparser.add_argument('dataset', type=str, choices=['E2E', 'webnlg', 'SFHotel'])
-    argparser.add_argument('imit', type=str, choices=['exact', 'sample', 'DAgger', 'LOLS'])
-    argparser.add_argument('content_model', type=str, choices=['arow', 'logreg', 'expert', 'lm'])
-    argparser.add_argument('word_model', type=str, choices=['arow', 'logreg', 'lm', 'rnn', 'onmt'])
-    argparser.add_argument('--learning_rate', type=float, default='0.1')
-    argparser.add_argument('--iterations', type=int, default='10')
-    argparser.add_argument('--tbptt', type=int, default='0')
-    argparser.add_argument('--name', type=str, default='def')
-    argparser.add_argument('--cuda', action='store_true', default=False)
-    argparser.add_argument('--trim', action='store_true', default=False)
-    argparser.add_argument('--full_delex', action='store_true', default=False)
-    argparser.add_argument('--reset', action='store_true', default=False)
-    argparser.add_argument('--resume', type=str, default=False)
-    argparser.add_argument('--use_non_monotonic_actions', action='store_true', default=False)
-    argparser.add_argument('--use_non_monotonic_post_descriminators', action='store_true', default=False)
-    argparser.add_argument('--use_copy_actions', action='store_true', default=False)
-    argparser.add_argument('--infer_MRs', action='store_true', default=False)
-    argparser.add_argument('--pretrained', action='store_true', default=False)
-    argparser.add_argument('--focus_on_trailing_seq', action='store_true', default=False)
-    args = argparser.parse_args()
-
-    random.seed(13)
-
-    # load the training data!
-    if args.dataset.lower() == 'e2e':
-        parser = DatasetParser('data/trainset.csv', 'data/devset.csv', 'data/testset_w_refs.csv', args.dataset, 'E2E', args.trim, args.full_delex, args.infer_MRs, args.reset)
-        # parser = DatasetParser('toyData/toy_trainset.csv', 'toyData/toy_devset.csv', False, args.dataset, 'toy_E2E', args.reset)
-
-        if args.name.lower() != 'def':
-            parser.dataset_name = args.name.lower()
-        for predicate in parser.trainingInstances:
-            random.shuffle(parser.trainingInstances[predicate])
-
-            #
-            parser.trainingInstances[predicate] = parser.trainingInstances[predicate][0:5]
-            parser.developmentInstances[predicate] = parser.trainingInstances[predicate]
-            #for di in parser.developmentInstances[predicate]:
-            #    if 'eattype' in di.input.attributeValues and di.input.attributeValues['eattype'] == 'coffee shop' and 'name' in di.input.attributeValues and 'area' in di.input.attributeValues: #len(di.input.attributeValues) == 3:
-            #        parser.developmentInstances[predicate] = [di]
-            #parser.developmentInstances[predicate].append(parser.testingInstances[predicate][0])
-            '''
-            parser.trainingInstances[predicate] = parser.trainingInstances[predicate][:1]
-            trainMRs = set()
-            for di in parser.trainingInstances[predicate]:
-                trainMRs.add(di.input.getAbstractMR())
-            tempDev = []
-            print(trainMRs)
-            for di in parser.developmentInstances[predicate]:
-                print(di.input.getAbstractMR())
-                if di.input.getAbstractMR() in trainMRs:
-                    tempDev.append(di)
-                if len(tempDev) >= 1:
-                    break
-            parser.developmentInstances[predicate] = tempDev
-            for di in parser.trainingInstances[predicate]:
-                print('---------------------')
-                print(di.input.MRstr)
-                print(di.directReference)
-                print(di.directReferenceSequence)
-            for di in parser.developmentInstances[predicate]:
-                print('---------------------')
-                print(di.input.MRstr)
-                print(di.directReference)
-                print(di.directReferenceSequence)
-            exit()
-            '''
-            # filteredTrain = []
-            # filteredDev = []
-            #for datasetInstance in parser.trainingInstances[predicate]:
-            #    if len(datasetInstance.input.attributeValues.keys()) == 3:
-            #        filteredTrain.append(datasetInstance)
-            #parser.trainingInstances[predicate] = filteredTrain
-            #for datasetInstance in parser.developmentInstances[predicate]:
-            #    if len(datasetInstance.input.attributeValues.keys()) == 3:
-            #        filteredDev.append(datasetInstance)
-            #parser.developmentInstances[predicate] = filteredDev
-
-    elif args.dataset.lower() == 'webnlg':
-        parser = DatasetParser('data/webNLG_challenge_data/train', 'data/webNLG_challenge_data/dev', False, args.dataset, 'webNLG', args.trim, args.full_delex, args.infer_MRs, args.reset)
-        # parser = DatasetParser('toyData/toy_trainset.csv', 'toyData/toy_devset.csv', False, 'toy_E2E', args.reset)
-
-        if args.name.lower() != 'def':
-            parser.dataset_name = args.name.lower()
-        for predicate in parser.trainingInstances:
-            filteredTrain = []
-            filteredDev = []
-            # random.shuffle(parser.trainingInstances[predicate])
-
-            for datasetInstance in parser.trainingInstances[predicate]:
-                if len(datasetInstance.input.attributeValues.keys()) == 1:
-                    filteredTrain.append(datasetInstance)
-            parser.trainingInstances[predicate] = filteredTrain[:3]
-            for datasetInstance in parser.developmentInstances[predicate]:
-                if len(datasetInstance.input.attributeValues.keys()) == 1:
-                    filteredDev.append(datasetInstance)
-            parser.developmentInstances[predicate] = filteredDev
-
-            parser.developmentInstances[predicate] = parser.trainingInstances[:]
-    elif args.dataset.lower() == 'sfhotel':
-        parser = DatasetParser('data/sfx_data/sfxhotel/train.json', 'data/sfx_data/sfxhotel/valid.json', 'data/sfx_data/sfxhotel/test.json', args.dataset, 'SFHotel', args.trim, False, False, args.reset)
-        # parser = DatasetParser('toyData/toy_trainset.csv', 'toyData/toy_devset.csv', False, args.dataset, 'toy_E2E', args.reset)
-
-        if args.name.lower() != 'def':
-            parser.dataset_name = args.name.lower()
-        for predicate in parser.trainingInstances:
-            random.shuffle(parser.trainingInstances[predicate])
-            '''
-            if predicate != 'inform':
-                parser.trainingInstances[predicate] = []
-                parser.developmentInstances[predicate] = []
-            else:
-                parser.trainingInstances[predicate] = parser.trainingInstances[predicate][0:10]
-                parser.developmentInstances[predicate] = parser.trainingInstances[predicate]
-            '''
-
-    params = ImitationLearner.params()
-    # Setting the iterations to one means on iteration, i.e. exact imitation. The learning rate becomes irrelevant then
-    params.iterations = args.iterations
-    params.first_iteration_is_exact_imitation = True
-    params.focus_on_trailing_seq = args.focus_on_trailing_seq
-
-    mode = args.imit
-    if mode.lower() == 'exact':
-        # Exact imitation params
-        params.rollin = 'expert'
-        params.rollout = 'expert'
-        params.rollout_expert_mode = 'exact'
-        if args.use_non_monotonic_post_descriminators:
-            params.first_iteration_is_exact_imitation = False
-            params.rollin = 'mix_set_prob'
-            params.learningParam = 0.0
-    elif mode.lower() == 'sample':
-        params.rollin = 'mix_desc_prob'
-        params.rollout = 'expert'
-        params.rollout_expert_mode = 'exact'
-    elif mode.lower() == 'dagger':
-        # DAgger params
-        params.first_iteration_is_exact_imitation = False
-        params.rollin = 'mix_set_prob'
-        params.rollout = 'expert'
-        params.learningParam = 0.7
-        params.rollout_expert_mode = 'heuristic'
-        # params.rollout_expert_mode = 'explore'
-        params.focus_on_trailing_seq = True
-    elif mode.lower() == 'lols':
-        # LOLS params
-        params.first_iteration_is_exact_imitation = False
-        params.rollin = 'learned'
-        params.rollout = 'mix_desc_prob'
-        params.rollout_expert_mode = 'heuristic'
-        params.learningParam = args.learning_rate
-    params.cuda = args.cuda
-    params.content_model = args.content_model
-    params.word_model = args.word_model
-    params.use_non_monotonic_actions = args.use_non_monotonic_actions
-    params.use_non_monotonic_post_descriminators = args.use_non_monotonic_post_descriminators
-    params.use_copy_actions = args.use_copy_actions
-    params.pretrained = args.pretrained
-    params.tbptt = args.tbptt
-    params.resume_training = args.resume
-    import time
-    start = time.time()
-
-    if parser.trainingInstances:
-        for predicate in parser.trainingInstances:
-            print("Training data size for {}: {}".format(predicate, len(parser.trainingInstances[predicate])))
-    if parser.developmentInstances:
-        for predicate in parser.developmentInstances:
-            print("Validation data size for {}: {}".format(predicate, len(parser.developmentInstances[predicate])))
-    if parser.testingInstances:
-        for predicate in parser.testingInstances:
-            print("Test data size for {}: {}".format(predicate, len(parser.testingInstances[predicate])))
-    print("-----------------------")
-
-    learner = ImitationLearner(parser, NLGState, params)
-
-    #for predicate in parser.trainingInstances:
-    #    parser.trainingInstances[predicate] = parser.trainingInstances[predicate][:3]
-    #    parser.developmentInstances[predicate] = parser.trainingInstances[predicate][:]
-    if args.content_model == 'arow' or args.word_model == 'arow':
-        parser.initializeLanguageModels(args.reset)
-
-    print("Training {} content and {} word models using {}...".format(params.content_model, params.word_model, args.imit))
-    learner.train()
-    end = time.time()
-    print("Running time: {}".format(end - start))
