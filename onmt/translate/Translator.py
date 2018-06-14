@@ -10,6 +10,7 @@ import onmt.ModelConstructor
 import onmt.translate.Beam
 import onmt.io
 import onmt.opts
+from sacrebleu import corpus_bleu
 
 
 def make_translator(opt, report_score=True, logger=None, out_file=None):
@@ -119,6 +120,8 @@ class Translator(object):
         self.report_score = report_score
         self.report_bleu = report_bleu
         self.report_rouge = report_rouge
+        self.calc_sacre_bleu = False
+        self.sacre_bleu = 0.0
 
         # for debugging
         self.beam_trace = self.dump_beam != ""
@@ -158,6 +161,7 @@ class Translator(object):
         gold_score_total, gold_words_total = 0, 0
 
         all_scores = []
+        all_realizations = []
         for batch in data_iter:
             batch_data = self.translate_batch(batch, data)
             translations = builder.from_batch(batch_data)
@@ -172,6 +176,7 @@ class Translator(object):
 
                 n_best_preds = [" ".join(pred)
                                 for pred in trans.pred_sents[:self.n_best]]
+                all_realizations.append(n_best_preds[0])
                 self.out_file.write('\n'.join(n_best_preds) + '\n')
                 self.out_file.flush()
 
@@ -228,12 +233,33 @@ class Translator(object):
                         self.logger.info(msg)
                     else:
                         print(msg)
+        if self.calc_sacre_bleu:
+            self.sacre_bleu = self._calc_sacre_bleu(all_realizations, tgt_path)
 
         if self.dump_beam:
             import json
             json.dump(self.translator.beam_accum,
                       codecs.open(self.dump_beam, 'w', 'utf-8'))
         return all_scores
+
+    def _calc_sacre_bleu(self, src_list, eval_refs_f):
+        with open(eval_refs_f) as f:
+            content = f.readlines()
+        eval_refs = []
+        eval_ref_cluster = []
+        for x in content:
+            x = x.strip()
+            if x:
+                eval_ref_cluster.append(x)
+            else:
+                if eval_ref_cluster:
+                    eval_refs.append(eval_ref_cluster)
+                eval_ref_cluster = []
+        print(len(src_list))
+        print(len(eval_refs))
+        print(corpus_bleu(src_list, eval_refs, lowercase=True))
+        exit()
+        return corpus_bleu(src_list, eval_refs, lowercase=True)
 
     def translate_batch(self, batch, data):
         """
@@ -422,8 +448,8 @@ class Translator(object):
         import subprocess
         path = os.path.split(os.path.realpath(__file__))[0]
 
-        res = subprocess.check_output("perl %s/tools/multi-bleu.perl %s"
-                                      % (path, tgt_path, self.output),
+        res = subprocess.check_output("perl '%s/tools/multi-bleu.perl' %s"
+                                      % (path, tgt_path),
                                       stdin=self.out_file,
                                       shell=True).decode("utf-8")
 
