@@ -247,9 +247,7 @@ class Translator(object):
                         self.logger.info(msg)
                     else:
                         print(msg)
-        if self.calc_sacre_bleu:
-            self.sacre_bleu = self._calc_sacre_bleu(all_realizations, tgt_path)
-
+                        
         if self.dump_beam:
             import json
             json.dump(self.translator.beam_accum,
