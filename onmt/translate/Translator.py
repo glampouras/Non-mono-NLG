@@ -10,9 +10,12 @@ import onmt.ModelConstructor
 import onmt.translate.Beam
 import onmt.io
 import onmt.opts
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from nltk import ngrams
+from structuredPredictionNLG.FullDelexicalizator import covers_attr_E2E
 
 
-def make_translator(opt, report_score=True, logger=None, out_file=None):
+def make_translator(opt, report_score=True, logger=None, out_file=None, fields=None, model=None, model_opt=None):
     if out_file is None:
         out_file = codecs.open(opt.output, 'w', 'utf-8')
 
@@ -23,8 +26,9 @@ def make_translator(opt, report_score=True, logger=None, out_file=None):
     onmt.opts.model_opts(dummy_parser)
     dummy_opt = dummy_parser.parse_known_args([])[0]
 
-    fields, model, model_opt = \
-        onmt.ModelConstructor.load_test_model(opt, dummy_opt.__dict__)
+    if not fields or not model or not model_opt:
+        fields, model, model_opt = \
+            onmt.ModelConstructor.load_test_model(opt, dummy_opt.__dict__)
 
     scorer = onmt.translate.GNMTGlobalScorer(opt.alpha,
                                              opt.beta,
@@ -119,6 +123,7 @@ class Translator(object):
         self.report_score = report_score
         self.report_bleu = report_bleu
         self.report_rouge = report_rouge
+        self.output_beam = False
 
         # for debugging
         self.beam_trace = self.dump_beam != ""
@@ -158,6 +163,10 @@ class Translator(object):
         gold_score_total, gold_words_total = 0, 0
 
         all_scores = []
+        self.eval_stats = []
+
+        if self.output_beam and self.beam_size > 1:
+            out_beam_file = codecs.open(self.output_beam, 'w', 'utf-8')
         for batch in data_iter:
             batch_data = self.translate_batch(batch, data)
             translations = builder.from_batch(batch_data)
@@ -170,10 +179,20 @@ class Translator(object):
                     gold_score_total += trans.gold_score
                     gold_words_total += len(trans.gold_sent) + 1
 
+                '''
                 n_best_preds = [" ".join(pred)
                                 for pred in trans.pred_sents[:self.n_best]]
+
                 self.out_file.write('\n'.join(n_best_preds) + '\n')
                 self.out_file.flush()
+                '''
+                n_best_preds = [" ".join(trans.pred_sents[:self.n_best][0])]
+
+                self.out_file.write('\n'.join(n_best_preds) + '\n')
+                self.out_file.flush()
+
+                # for pred in trans.pred_sents[:self.n_best]:
+                #     print(" ".join(pred))
 
                 if self.verbose:
                     sent_number = next(counter)
@@ -228,12 +247,33 @@ class Translator(object):
                         self.logger.info(msg)
                     else:
                         print(msg)
+        if self.calc_sacre_bleu:
+            self.sacre_bleu = self._calc_sacre_bleu(all_realizations, tgt_path)
 
         if self.dump_beam:
             import json
             json.dump(self.translator.beam_accum,
                       codecs.open(self.dump_beam, 'w', 'utf-8'))
         return all_scores
+
+    def _calc_sacre_bleu(self, src_list, eval_refs_f):
+        with open(eval_refs_f) as f:
+            content = f.readlines()
+        eval_refs = []
+        eval_ref_cluster = []
+        for x in content:
+            x = x.strip()
+            if x:
+                eval_ref_cluster.append(x)
+            else:
+                if eval_ref_cluster:
+                    eval_refs.append(eval_ref_cluster)
+                eval_ref_cluster = []
+        print(len(src_list))
+        print(len(eval_refs))
+        print(corpus_bleu(src_list, eval_refs, lowercase=True))
+        exit()
+        return corpus_bleu(src_list, eval_refs, lowercase=True)
 
     def translate_batch(self, batch, data):
         """
@@ -422,8 +462,8 @@ class Translator(object):
         import subprocess
         path = os.path.split(os.path.realpath(__file__))[0]
 
-        res = subprocess.check_output("perl %s/tools/multi-bleu.perl %s"
-                                      % (path, tgt_path, self.output),
+        res = subprocess.check_output("perl '%s/tools/multi-bleu.perl' %s"
+                                      % (path, tgt_path),
                                       stdin=self.out_file,
                                       shell=True).decode("utf-8")
 

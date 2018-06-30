@@ -124,19 +124,19 @@ def preprocess_opts(parser):
                        help="""Type of the source input.
                        Options are [text|img].""")
 
-    group.add_argument('-train_src', required=True,
+    group.add_argument('-train_src',
                        help="Path to the training source data")
-    group.add_argument('-train_tgt', required=True,
+    group.add_argument('-train_tgt',
                        help="Path to the training target data")
-    group.add_argument('-valid_src', required=True,
+    group.add_argument('-valid_src',
                        help="Path to the validation source data")
-    group.add_argument('-valid_tgt', required=True,
+    group.add_argument('-valid_tgt',
                        help="Path to the validation target data")
 
     group.add_argument('-src_dir', default="",
                        help="Source directory for image or audio files.")
 
-    group.add_argument('-save_data', required=True,
+    group.add_argument('-save_data',
                        help="Output file for the prepared data")
 
     group.add_argument('-max_shard_size', type=int, default=0,
@@ -211,7 +211,7 @@ def train_opts(parser):
     # Model loading/saving options
 
     group = parser.add_argument_group('General')
-    group.add_argument('-data', required=True,
+    group.add_argument('-data',
                        help="""Path prefix to the ".train.pt" and
                        ".valid.pt" file path from preprocess.py""")
 
@@ -377,14 +377,14 @@ def train_opts(parser):
 
 def translate_opts(parser):
     group = parser.add_argument_group('Model')
-    group.add_argument('-model', required=True,
+    group.add_argument('-model',
                        help='Path to model .pt file')
 
     group = parser.add_argument_group('Data')
     group.add_argument('-data_type', default="text",
                        help="Type of the source input. Options: [text|img].")
 
-    group.add_argument('-src',   required=True,
+    group.add_argument('-src',
                        help="""Source sequence to decode (one line per
                        sequence)""")
     group.add_argument('-src_dir',   default="",

@@ -20,12 +20,25 @@ import onmt.Models
 import onmt.ModelConstructor
 import onmt.modules
 from onmt.Utils import use_gpu, get_logger
+from onmt.translate.Translator import make_translator
 import onmt.opts
+
+from structuredPredictionNLG.DatasetParser import DatasetParser
+from structuredPredictionNLG.DatasetInstance import lexicalize_word_sequence
+import numpy
+from nltk.translate.bleu_score import corpus_bleu
+from copy import copy
 
 
 parser = argparse.ArgumentParser(
     description='train.py',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+parser.add_argument('dataset', type=str, choices=['e2e', 'webnlg', 'sfhotel'])
+parser.add_argument('--name', type=str, default='def')
+parser.add_argument('--trim', action='store_true', default=False)
+parser.add_argument('--full_delex', action='store_true', default=False)
+parser.add_argument('--infer_MRs', action='store_true', default=False)
 
 # onmt.opts.py
 onmt.opts.add_md_help_argument(parser)
@@ -33,6 +46,7 @@ onmt.opts.model_opts(parser)
 onmt.opts.train_opts(parser)
 
 opt = parser.parse_args()
+opt.reset = False
 
 logger = get_logger(opt.log_file)
 
@@ -234,19 +248,31 @@ def make_loss_compute(model, tgt_vocab, opt, train=True):
     return compute
 
 
-def train_model(model, fields, optim, data_type, model_opt):
-    train_loss = make_loss_compute(model, fields["tgt"].vocab, opt)
-    valid_loss = make_loss_compute(model, fields["tgt"].vocab, opt,
-                                   train=False)
+def train_model(model, fields, optim, data_type, opt_per_pred):
+    translate_parser = argparse.ArgumentParser(
+        description='translate',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    onmt.opts.add_md_help_argument(translate_parser)
+    onmt.opts.translate_opts(translate_parser)
+    opt_translate = translate_parser.parse_args(args=[])
+    opt_translate.replace_unk = False
+    opt_translate.verbose = False
+    opt_translate.block_ngram_repeat = False
+    opt_translate.gpu = opt.gpuid[0]
 
     trunc_size = opt.truncated_decoder  # Badly named...
     shard_size = opt.max_generator_batches
     norm_method = opt.normalization
     grad_accum_count = opt.accum_count
 
-    trainer = onmt.Trainer(model, train_loss, valid_loss, optim,
-                           trunc_size, shard_size, data_type,
-                           norm_method, grad_accum_count)
+    trainer = {}
+    for predicate in opt.parser.predicates:
+        train_loss = make_loss_compute(model[predicate], fields[predicate]["tgt"].vocab, opt_per_pred[predicate])
+        valid_loss = make_loss_compute(model[predicate], fields[predicate]["tgt"].vocab, opt_per_pred[predicate],
+                                       train=False)
+        trainer[predicate] = onmt.Trainer(model[predicate], train_loss, valid_loss, optim[predicate],
+                               trunc_size, shard_size, data_type[predicate],
+                               norm_method, grad_accum_count)
 
     logger.info('')
     logger.info('Start training...')
@@ -257,38 +283,107 @@ def train_model(model, fields, optim, data_type, model_opt):
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         logger.info('')
 
-        # 1. Train for one epoch on the training set.
-        train_iter = make_dataset_iter(lazily_load_dataset("train"),
-                                       fields, opt)
-        train_stats = trainer.train(train_iter, epoch, report_func)
-        logger.info('Train perplexity: %g' % train_stats.ppl())
-        logger.info('Train accuracy: %g' % train_stats.accuracy())
+        train_stats = {}
+        valid_stats = {}
+        for predicate in opt.parser.predicates:
+            logger.info('Train predicate: %s' % predicate)
+            # 1. Train for one epoch on the training set.
+            train_iter = make_dataset_iter(lazily_load_dataset("train", opt_per_pred[predicate]),
+                                           fields[predicate], opt_per_pred[predicate])
+            train_stats[predicate] = trainer[predicate].train(train_iter, epoch, fields[predicate], report_func)
+            logger.info('Train perplexity: %g' % train_stats[predicate].ppl())
+            logger.info('Train accuracy: %g' % train_stats[predicate].accuracy())
 
-        # 2. Validate on the validation set.
-        valid_iter = make_dataset_iter(lazily_load_dataset("valid"),
-                                       fields, opt,
-                                       is_train=False)
-        valid_stats = trainer.validate(valid_iter)
-        logger.info('Validation perplexity: %g' % valid_stats.ppl())
-        logger.info('Validation accuracy: %g' % valid_stats.accuracy())
+            # 2. Validate on the validation set.
+            valid_iter = make_dataset_iter(lazily_load_dataset("valid", opt_per_pred[predicate]),
+                                           fields[predicate], opt_per_pred[predicate],
+                                           is_train=False)
+            valid_stats[predicate] = trainer[predicate].validate(valid_iter)
+            logger.info('Validation perplexity: %g' % valid_stats[predicate].ppl())
+            logger.info('Validation accuracy: %g' % valid_stats[predicate].accuracy())
 
-        # 3. Log to remote server.
-        if opt.exp_host:
-            train_stats.log("train", experiment, optim.lr)
-            valid_stats.log("valid", experiment, optim.lr)
-        if opt.tensorboard:
-            train_stats.log_tensorboard("train", writer, optim.lr, epoch)
-            train_stats.log_tensorboard("valid", writer, optim.lr, epoch)
+            # 3. Log to remote server.
+            if opt_per_pred[predicate].exp_host:
+                train_stats[predicate].log("train", experiment, optim[predicate].lr)
+                valid_stats[predicate].log("valid", experiment, optim[predicate].lr)
+            if opt_per_pred[predicate].tensorboard:
+                train_stats[predicate].log_tensorboard("train", writer, optim[predicate].lr, epoch)
+                train_stats[predicate].log_tensorboard("valid", writer, optim[predicate].lr, epoch)
 
-        # 4. Update the learning rate
-        decay = trainer.epoch_step(valid_stats.ppl(), epoch)
-        if decay:
-            logger.info("Decaying learning rate to %g" % trainer.optim.lr)
+            # 4. Update the learning rate
+            decay = trainer[predicate].epoch_step(valid_stats[predicate].ppl(), epoch)
+            if decay:
+                logger.info("Decaying learning rate to %g" % trainer[predicate].optim.lr)
 
         # 5. Drop a checkpoint if needed.
-        if epoch >= opt.start_checkpoint_at:
-            trainer.drop_checkpoint(model_opt, epoch, fields, valid_stats)
+        if epoch % 10 == 0: #epoch >= opt.start_checkpoint_at:
+            opt_translates = []
+            for predicate in opt.parser.predicates:
+                opt_translate.predicate = predicate
+                opt_translate.src = 'cache/valid_src_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
+                opt_translate.tgt = 'cache/valid_eval_refs_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
+                opt_translate.output = 'result/{:s}/valid_res_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)
+                #opt_translate.model = '%s_acc_%.2f_ppl_%.2f_e%d.pt' % (
+                #opt_per_pred[predicate].save_model, valid_stats[predicate].accuracy(), valid_stats[predicate].ppl(), epoch)
 
+                check_save_result_path(opt_translate.output)
+
+                translator = make_translator(opt_translate, report_score=False, logger=logger, fields=fields[predicate], model=trainer[predicate].model, model_opt=opt_per_pred[predicate])
+                translator.output_beam = 'result/{:s}/valid_res_beam_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)
+                #translator.beam_size = 5
+                #translator.n_best = 5
+                translator.translate(opt_translate.src_dir, opt_translate.src, opt_translate.tgt, opt_translate.batch_size, opt_translate.attn_debug)
+                opt_translates.append(copy(opt_translate))
+            corpusBLEU, bleu, rouge, coverage = evaluate(opt_translates)
+            #for predicate in opt.parser.predicates:
+            #    trainer[predicate].drop_checkpoint(opt_per_pred[predicate], epoch, corpusBLEU, bleu, rouge, coverage, fields[predicate], valid_stats[predicate])
+
+def evaluate(opt_translates):
+    eval_stats = []
+    eval_results = []
+
+    for opt_translate in opt_translates:
+        with open(opt_translate.output, 'r') as handle:
+            lines = [line.strip() for line in handle]
+            for i, l in enumerate(lines):
+                di = opt.parser.developmentInstances[opt_translate.predicate][i]
+                lexicalized_l = lexicalize_word_sequence(l.split(), di.input.delexicalizationMap)
+
+                stats = '\nMR:' + str(di.input.attributeValues) + '\nREAL: ' + ' '.join(lexicalized_l) + '\nDREF: ' + str(di.directReference)
+                logger.info(stats)
+
+                eval_stats.append(di.output.evaluateAgainst(lexicalized_l))
+                eval_results.append((lexicalized_l, eval_stats[-1].refs))
+
+                stats = '\nEREF: ' + str(eval_stats[-1].refs) + '\nBLEU: ' + str(eval_stats[-1].BLEU) + '\n'
+                logger.info(stats)
+
+                if (' '.join(lexicalized_l)).strip() == str(di.directReference).strip() and eval_stats[-1].BLEU != 1.0:
+                    exit()
+
+    realizations = []
+    references = []
+    for realization, refs in eval_results:
+        realizations.append(realization)
+        references.append(refs)
+    corpusBLEU = corpus_bleu(references, realizations)
+    bleu = numpy.average([e.BLEU for e in eval_stats])
+    rouge = numpy.average([e.ROUGE for e in eval_stats])
+    coverage = numpy.average([e.COVERAGE for e in eval_stats])
+
+    print("corpusBLEU:", corpusBLEU)
+    print("BLEU:", bleu)
+    print("smoothBLEU:", numpy.average([e.BLEUSmooth for e in eval_stats]))
+    print("ROUGE:", rouge)
+    print("COVERAGE:", coverage)
+
+    return corpusBLEU, bleu, rouge, coverage
+
+def check_save_result_path(path):
+    save_result_path = os.path.abspath(path)
+    model_dirname = os.path.dirname(save_result_path)
+    if not os.path.exists(model_dirname):
+        os.makedirs(model_dirname)
 
 def check_save_model_path():
     save_model_path = os.path.abspath(opt.save_model)
@@ -311,7 +406,7 @@ def tally_parameters(model):
     logger.info('decoder: ' + str(dec))
 
 
-def lazily_load_dataset(corpus_type):
+def lazily_load_dataset(corpus_type, opt_per_pred):
     """
     Dataset generator. Don't do extra stuff here, like printing,
     because they will be postponed to the first loading time.
@@ -330,24 +425,24 @@ def lazily_load_dataset(corpus_type):
         return dataset
 
     # Sort the glob output by file name (by increasing indexes).
-    pts = sorted(glob.glob(opt.data + '.' + corpus_type + '.[0-9]*.pt'))
+    pts = sorted(glob.glob(opt_per_pred.data + opt_per_pred.file_templ + '.' + corpus_type + '.[0-9]*.pt'))
     if pts:
         for pt in pts:
             yield lazy_dataset_loader(pt, corpus_type)
     else:
         # Only one onmt.io.*Dataset, simple!
-        pt = opt.data + '.' + corpus_type + '.pt'
+        pt = opt_per_pred.data + opt_per_pred.file_templ + '.' + corpus_type + '.pt'
         yield lazy_dataset_loader(pt, corpus_type)
 
 
-def load_fields(dataset, data_type, checkpoint):
+def load_fields(dataset, data_type, opt_per_pred, checkpoint):
     if checkpoint is not None:
-        logger.info('Loading vocab from checkpoint at %s.' % opt.train_from)
+        logger.info('Loading vocab from checkpoint at %s.' % opt_per_pred.train_from)
         fields = onmt.io.load_fields_from_vocab(
             checkpoint['vocab'], data_type)
     else:
         fields = onmt.io.load_fields_from_vocab(
-            torch.load(opt.data + '.vocab.pt'), data_type)
+            torch.load(opt_per_pred.data + opt_per_pred.file_templ + '.vocab.pt'), data_type)
     fields = dict([(k, f) for (k, f) in fields.items()
                    if k in dataset.examples[0].__dict__])
 
@@ -373,9 +468,9 @@ def collect_report_features(fields):
                     (j, len(fields[feat].vocab)))
 
 
-def build_model(model_opt, opt, fields, checkpoint):
+def build_model(opt, fields, checkpoint):
     logger.info('Building model...')
-    model = onmt.ModelConstructor.make_base_model(model_opt, fields,
+    model = onmt.ModelConstructor.make_base_model(opt, fields,
                                                   use_gpu(opt), checkpoint)
     if len(opt.gpuid) > 1:
         logger.info('Multi gpu training: ', opt.gpuid)
@@ -467,46 +562,78 @@ def show_optimizer_state(optim):
         print("optim.optimizer.state_dict()['param_groups'] element: " + str(
             element))
 
-
 def main():
-    # Load checkpoint if we resume from a previous training.
-    if opt.train_from:
-        logger.info('Loading checkpoint from %s' % opt.train_from)
-        checkpoint = torch.load(opt.train_from,
-                                map_location=lambda storage, loc: storage)
-        model_opt = checkpoint['opt']
-        # I don't like reassigning attributes of opt: it's not clear.
-        opt.start_epoch = checkpoint['epoch'] + 1
-        model_opt.save_model = opt.save_model
-    else:
-        checkpoint = None
-        model_opt = opt
+    # load the training data!
+    if opt.dataset.lower() == 'e2e':
+        dataparser = DatasetParser('data/e2e/trainset.csv', 'data/e2e/devset.csv', 'data/e2e/testset_w_refs.csv', 'E2E', opt)
+    elif opt.dataset.lower() == 'webnlg':
+        dataparser = DatasetParser('data/webNLG_challenge_data/train', 'data/webNLG_challenge_data/dev', False, 'webNLG', opt)
+    elif opt.dataset.lower() == 'sfhotel':
+        dataparser = DatasetParser('data/sfx_data/sfxhotel/train.json', 'data/sfx_data/sfxhotel/valid.json', 'data/sfx_data/sfxhotel/test.json', 'SFHotel', opt)
 
-    # Peek the fisrt dataset to determine the data_type.
-    # (All datasets have the same data_type).
-    first_dataset = next(lazily_load_dataset("train"))
-    data_type = first_dataset.data_type
+    opt.data = 'save_data/{:s}/'.format(opt.dataset)
+    gen_templ = dataparser.get_onmt_file_templ(opt)
 
-    # Load fields generated from preprocess phase.
-    fields = load_fields(first_dataset, data_type, checkpoint)
+    dataparser.predicates = ['inform']
+    opt.parser = dataparser
+    model = {}
+    fields = {}
+    optim = {}
+    data_type ={}
 
-    # Report src/tgt features.
-    collect_report_features(fields)
+    opt_per_pred = {}
+    for predicate in dataparser.predicates:
+        opt_per_pred[predicate] = copy(opt)
+        opt_per_pred[predicate].predicate = predicate
+        opt_per_pred[predicate].file_templ = gen_templ.format(predicate)
+        opt_per_pred[predicate].save_model = 'save_model/{:s}/{:s}'.format(opt_per_pred[predicate].dataset, predicate)
+        # Load checkpoint if we resume from a previous training.
+        if opt_per_pred[predicate].train_from:
+            logger.info('Loading checkpoint from %s' % opt_per_pred[predicate].train_from)
+            checkpoint = torch.load(opt_per_pred[predicate].train_from,
+                                    map_location=lambda storage, loc: storage)
+            opt_per_pred[predicate] = checkpoint['opt']
+            # I don't like reassigning attributes of opt: it's not clear.
+            opt_per_pred[predicate].start_epoch = checkpoint['epoch'] + 1
+            opt_per_pred[predicate].save_model = opt_per_pred[predicate].save_model
+        else:
+            checkpoint = None
 
-    # Build model.
-    model = build_model(model_opt, opt, fields, checkpoint)
-    tally_parameters(model)
-    check_save_model_path()
+        # Peek the fisrt dataset to determine the data_type.
+        # (All datasets have the same data_type).
+        first_dataset = next(lazily_load_dataset("train", opt_per_pred[predicate]))
+        data_type[predicate] = first_dataset.data_type
 
-    # Build optimizer.
-    optim = build_optim(model, checkpoint)
+        # Load fields generated from preprocess phase.
+        fields[predicate] = load_fields(first_dataset, data_type[predicate], opt_per_pred[predicate], checkpoint)
+
+        # Report src/tgt features.
+        collect_report_features(fields[predicate])
+
+        # Build model.
+        model[predicate] = build_model(opt_per_pred[predicate], fields[predicate], checkpoint)
+        model[predicate].predicate = predicate
+        tally_parameters(model[predicate])
+        check_save_model_path()
+
+        # Build optimizer.
+        optim[predicate] = build_optim(model[predicate], checkpoint)
 
     # Do training.
-    train_model(model, fields, optim, data_type, model_opt)
+    train_model(model, fields, optim, data_type, opt_per_pred)
+
+    # Do
 
     # If using tensorboard for logging, close the writer after training.
     if opt.tensorboard:
         writer.close()
+
+        # Do training.
+        train_model(model, fields, optim, data_type, model_opt)
+
+        # If using tensorboard for logging, close the writer after training.
+        if opt.tensorboard:
+            writer.close()
 
 
 if __name__ == "__main__":

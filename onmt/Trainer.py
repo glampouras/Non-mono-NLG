@@ -66,6 +66,9 @@ class Statistics(object):
            msg (str): log message.
         """
         t = self.elapsed_time()
+        msg = (("Epoch %2d, %5d/%5d") %
+               (epoch, batch,  n_batches))
+        '''
         msg = (("Epoch %2d, %5d/%5d; acc: %6.2f; ppl: %6.2f; xent: " +
                 "%6.2f;  %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s " +
                 "elapsed") %
@@ -76,6 +79,7 @@ class Statistics(object):
                 self.n_src_words / (t + 1e-5),
                 self.n_words / (t + 1e-5),
                 time.time() - start))
+        '''
         return msg
 
     def log(self, prefix, experiment, lr):
@@ -138,7 +142,7 @@ class Trainer(object):
         # Set model in training mode.
         self.model.train()
 
-    def train(self, train_iter, epoch, report_func=None):
+    def train(self, train_iter, epoch, fields, report_func=None):
         """ Train next epoch.
         Args:
             train_iter: training data iterator
@@ -179,7 +183,7 @@ class Trainer(object):
             if accum == self.grad_accum_count:
                 self._gradient_accumulation(
                     true_batchs, total_stats,
-                    report_stats, normalization)
+                    report_stats, normalization, fields)
 
                 if report_func is not None:
                     report_stats = report_func(
@@ -243,7 +247,7 @@ class Trainer(object):
     def epoch_step(self, ppl, epoch):
         return self.optim.update_learning_rate(ppl, epoch)
 
-    def drop_checkpoint(self, opt, epoch, fields, valid_stats):
+    def drop_checkpoint(self, opt, epoch, corpusBLEU, bleu, rouge, coverage, fields, valid_stats):
         """ Save a resumable checkpoint.
 
         Args:
@@ -272,12 +276,17 @@ class Trainer(object):
             'optim': self.optim,
         }
         torch.save(checkpoint,
+                   '%s_e%d_corpusBLEU_%.2f_bleu_%.2f_rouge_%.2f_coverage_%.2f.pt'
+                   % (opt.save_model, epoch, corpusBLEU, bleu, rouge, coverage))
+        '''
+        torch.save(checkpoint,
                    '%s_acc_%.2f_ppl_%.2f_e%d.pt'
                    % (opt.save_model, valid_stats.accuracy(),
                       valid_stats.ppl(), epoch))
+        '''
 
     def _gradient_accumulation(self, true_batchs, total_stats,
-                               report_stats, normalization):
+                               report_stats, normalization, fields):
         if self.grad_accum_count > 1:
             self.model.zero_grad()
 
@@ -296,8 +305,19 @@ class Trainer(object):
                 report_stats.n_src_words += src_lengths.sum()
             else:
                 src_lengths = None
-
             tgt_outer = onmt.io.make_features(batch, 'tgt')
+            '''
+            print("training signal")
+            vocab = fields["tgt"].vocab
+            tokens = []
+            for tok in tgt_outer:
+                if tok < len(vocab):
+                    tokens.append(vocab.itos[tok])
+                if tokens[-1] == onmt.io.EOS_WORD:
+                    tokens = tokens[:-1]
+                    break
+            print(tokens)
+            '''
 
             for j in range(0, target_size - 1, trunc_size):
                 # 1. Create truncated target.
@@ -323,6 +343,5 @@ class Trainer(object):
                 # If truncated, don't backprop fully.
                 if dec_state is not None and j+trunc_size < target_size-1:
                     dec_state.detach()
-
         if self.grad_accum_count > 1:
             self.optim.step()

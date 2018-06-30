@@ -110,3 +110,7 @@ ENV/
 
 # Tensorboard
 runs/
+
+cache/
+
+result/
