@@ -38,6 +38,10 @@ class DatasetParser:
         self.developmentInstances = False
         self.testingInstances = False
 
+        self.train_src_to_di = {}
+        self.dev_src_to_di = {}
+        self.test_src_to_di = {}
+
         self.available_values = set()
         self.available_subjects = set()
 
@@ -113,7 +117,11 @@ class DatasetParser:
                             self.vocabulary_per_attr[di.input.predicate][attr].add(a.label)
 
             for predicate in self.trainingInstances:
+                if predicate not in self.train_src_to_di:
+                    self.train_src_to_di[predicate] = {}
                 for di in self.trainingInstances[predicate]:
+                    di.input.nn_src = " ".join(["{} {}".format(attr, di.input.attributeValues[attr]) if attr in di.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in [i for i in di.directAttrSequence if i != Action.TOKEN_SHIFT]])
+                    self.train_src_to_di[predicate][di.input.nn_src] = di
                     for ref in di.output.evaluationReferences:
                         refSeq = ref.split(" ")
                         if ref not in self.ngram_lists_per_relexed_word_sequence:
@@ -147,6 +155,7 @@ class DatasetParser:
                         #else:
                         #    total_relexed_ngram_lists_tmp.add(n_gram)
 
+        scp = SimpleContentPredictor(self.dataset, self.attributes, self.trainingInstances)
         if (opt.reset or not self.loadDevelopmentLists(opt.full_delex)) and developmentFile:
             devs = self.createLists(self.base_dir + developmentFile, full_delex=opt.full_delex)
             # Create the evaluation refs for development data, as described in https://github.com/tuetschek/e2e-metrics/tree/master/example-inputs
@@ -172,6 +181,21 @@ class DatasetParser:
                     di.output.calcEvaluationReferenceAttrValueSequences()
 
                     self.developmentInstances[predicate].append(di)
+
+            for predicate in self.developmentInstances:
+                if predicate not in self.dev_src_to_di:
+                    self.dev_src_to_di[predicate] = {}
+                for di in self.developmentInstances[predicate]:
+                    content_sequence = [cleanAndGetAttr(a.attribute) for a in
+                                        scp.rollContentSequence_withLearnedPolicy(di) if
+                                        cleanAndGetAttr(a.attribute) != Action.TOKEN_SHIFT]
+                    di.input.nn_src = " ".join(["{} {}".format(attr, di.input.attributeValues[
+                        attr]) if attr in di.input.attributeValues else "{}@none@ {}_value@none@".format(attr,
+                                                                                                           attr) for
+                                                    attr in content_sequence])
+
+                    self.dev_src_to_di[predicate][di.input.nn_src] = di
+
             self.writeDevelopmentLists(opt.full_delex)
 
             for predicate in self.developmentInstances:
@@ -217,9 +241,24 @@ class DatasetParser:
                     di.output.calcEvaluationReferenceAttrValueSequences()
 
                     self.testingInstances[predicate].append(di)
+
+            for predicate in self.testingInstances:
+                if predicate not in self.test_src_to_di:
+                    self.test_src_to_di[predicate] = {}
+                for di in self.testingInstances[predicate]:
+                    content_sequence = [cleanAndGetAttr(a.attribute) for a in
+                                        scp.rollContentSequence_withLearnedPolicy(di) if
+                                        cleanAndGetAttr(a.attribute) != Action.TOKEN_SHIFT]
+                    di.input.nn_src = " ".join(["{} {}".format(attr, di.input.attributeValues[
+                        attr]) if attr in di.input.attributeValues else "{}@none@ {}_value@none@".format(attr,
+                                                                                                         attr)
+                                                for
+                                                attr in content_sequence])
+
+                    self.test_src_to_di[predicate][di.input.nn_src] = di
             self.writeTestingLists(opt.full_delex)
 
-        self.write_onmt_data(opt, SimpleContentPredictor(self.dataset, self.attributes, self.trainingInstances))
+        self.write_onmt_data(opt)
 
     def get_ngram_list(self, word_sequence, min=1):
         ngram_list = []
@@ -1413,6 +1452,12 @@ class DatasetParser:
         else:
             fileNotFound = True
 
+        if os.path.isfile(self.base_dir + 'cache/train_src_to_di_' + fileSuffix):
+            with open(self.base_dir + 'cache/train_src_to_di_' + fileSuffix, 'rb') as handle:
+                self.train_src_to_di = pickle.load(handle)
+        else:
+            fileNotFound = True
+
         if not fileNotFound:
             print("done!")
             return True
@@ -1432,7 +1477,11 @@ class DatasetParser:
             with open(self.base_dir + 'cache/developmentInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'rb') as handle:
                 self.developmentInstances = pickle.load(handle)
 
-        if self.developmentInstances:
+        if os.path.isfile(self.base_dir + 'cache/dev_src_to_di_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle'):
+            with open(self.base_dir + 'cache/dev_src_to_di_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'rb') as handle:
+                self.dev_src_to_di = pickle.load(handle)
+
+        if self.developmentInstances and self.dev_src_to_di:
             print("done!")
             return True
         print("failed!")
@@ -1451,7 +1500,11 @@ class DatasetParser:
             with open(self.base_dir + 'cache/testingInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'rb') as handle:
                 self.testingInstances = pickle.load(handle)
 
-        if self.testingInstances:
+        if os.path.isfile(self.base_dir + 'cache/test_src_to_di_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle'):
+            with open(self.base_dir + 'cache/test_src_to_di_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'rb') as handle:
+                self.test_src_to_di = pickle.load(handle)
+
+        if self.testingInstances and self.test_src_to_di:
             print("done!")
             return True
         print("failed!")
@@ -1514,8 +1567,10 @@ class DatasetParser:
             pickle.dump(self.ngram_lists_per_word_sequence, handle)
         with open(self.base_dir + 'cache/ngramListsPerRelexedWordSequence_' + fileSuffix, 'wb') as handle:
             pickle.dump(self.ngram_lists_per_relexed_word_sequence, handle)
+        with open(self.base_dir + 'cache/train_src_to_di_' + fileSuffix, 'wb') as handle:
+            pickle.dump(self.train_src_to_di, handle)
 
-    def write_onmt_data(self, opt, simple_content_predictor):
+    def write_onmt_data(self, opt):
         print("Writing onmt training data...")
         gen_templ = self.get_onmt_file_templ(opt)
         train_src_templ, train_tgt_templ, train_eval_refs_templ, valid_src_templ, valid_tgt_templ, valid_eval_refs_templ, test_src_templ, test_tgt_templ, test_eval_refs_templ = self.get_onmt_file_templs(gen_templ)
@@ -1523,11 +1578,10 @@ class DatasetParser:
         for predicate in self.predicates:
             if predicate in self.trainingInstances:
                 with open(train_src_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]) for item in self.trainingInstances[predicate]])
-                    handle.writelines(["%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in [i for i in item.directAttrSequence if i != Action.TOKEN_SHIFT]]) for item in self.trainingInstances[predicate]])
+                    handle.writelines([item.input.nn_src + '\n' for item in self.trainingInstances[predicate]])
                 with open(train_tgt_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.trainingInstances[predicate]])
-                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence]) for item in self.trainingInstances[predicate]])
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.trainingInstances[predicate]])
+                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence]) for item in self.trainingInstances[predicate]])
                 with open(train_eval_refs_templ.format(predicate), 'w') as handle:
                     for di in self.trainingInstances[predicate]:
                         handle.writelines(["%s\n" % item for item
@@ -1536,18 +1590,10 @@ class DatasetParser:
 
             if predicate in self.developmentInstances:
                 with open(valid_src_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]) for item in self.developmentInstances[predicate]])
-                    lines = []
-                    for item in self.developmentInstances[predicate]:
-                        content_sequence = [cleanAndGetAttr(a.attribute) for a in simple_content_predictor.rollContentSequence_withLearnedPolicy(item) if cleanAndGetAttr(a.attribute) != Action.TOKEN_SHIFT]
-                        lines.append("%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[
-                            attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr,
-                                                                                                               attr) for
-                                            attr in content_sequence]))
-                    handle.writelines(lines)
+                    handle.writelines([item.input.nn_src + '\n' for item in self.developmentInstances[predicate]])
                 with open(valid_tgt_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.developmentInstances[predicate]])
-                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence]) for item in self.developmentInstances[predicate]])
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.developmentInstances[predicate]])
+                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence]) for item in self.developmentInstances[predicate]])
                 with open(valid_eval_refs_templ.format(predicate), 'w') as handle:
                     for di in self.developmentInstances[predicate]:
                         handle.writelines(["%s\n" % item for item
@@ -1581,20 +1627,10 @@ class DatasetParser:
 
             if predicate in self.testingInstances:
                 with open(test_src_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr, attr) for attr in sorted(self.attributes[predicate])]) for item in self.testingInstances[predicate]])
-                    lines = []
-                    for item in self.testingInstances[predicate]:
-                        content_sequence = [cleanAndGetAttr(a.attribute) for a in
-                                            simple_content_predictor.rollContentSequence_withLearnedPolicy(item) if
-                                            cleanAndGetAttr(a.attribute) != Action.TOKEN_SHIFT]
-                        lines.append("%s\n" % " ".join(["{} {}".format(attr, item.input.attributeValues[
-                            attr]) if attr in item.input.attributeValues else "{}@none@ {}_value@none@".format(attr,
-                                                                                                               attr) for
-                                                        attr in content_sequence]))
-                    handle.writelines(lines)
+                    handle.writelines([item.input.nn_src + '\n' for item in self.testingInstances[predicate]])
                 with open(test_tgt_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.testingInstances[predicate]])
-                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence]) for item in self.testingInstances[predicate]])
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.testingInstances[predicate]])
+                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence]) for item in self.testingInstances[predicate]])
                 with open(test_eval_refs_templ.format(predicate), 'w') as handle:
                     for di in self.testingInstances[predicate]:
                         handle.writelines(["%s\n" % item for item
@@ -1641,6 +1677,8 @@ class DatasetParser:
 
         with open(self.base_dir + 'cache/developmentInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'wb') as handle:
             pickle.dump(self.developmentInstances, handle)
+        with open(self.base_dir + 'cache/dev_src_to_di_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'wb') as handle:
+            pickle.dump(self.dev_src_to_di, handle)
 
     def writeTestingLists(self, full_delex):
         print("Writing testing data...")
@@ -1652,6 +1690,8 @@ class DatasetParser:
 
         with open(self.base_dir + 'cache/testingInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'wb') as handle:
             pickle.dump(self.testingInstances, handle)
+        with open(self.base_dir + 'cache/test_src_to_di_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'wb') as handle:
+            pickle.dump(self.test_src_to_di, handle)
 
 
     @staticmethod

@@ -343,13 +343,16 @@ def evaluate(opt_translates):
     eval_results = []
 
     for opt_translate in opt_translates:
+        src_lines = []
+        with open(opt_translate.src, 'r') as f:
+            src_lines = f.readlines()
         with open(opt_translate.output, 'r') as handle:
             lines = [line.strip() for line in handle]
             for i, l in enumerate(lines):
-                di = opt.parser.developmentInstances[opt_translate.predicate][i]
+                di = opt.parser.dev_src_to_di[opt_translate.predicate][src_lines[i].strip()]
                 lexicalized_l = lexicalize_word_sequence(l.split(), di.input.delexicalizationMap)
 
-                stats = '\nMR:' + str(di.input.attributeValues) + '\nREAL: ' + ' '.join(lexicalized_l) + '\nDREF: ' + str(di.directReference)
+                stats = '\nsrc:' + str(src_lines[i]) + '\nMR:' + str(di.input.attributeValues) + '\nREAL: ' + ' '.join(lexicalized_l) + '\nDREF: ' + str(di.directReference)
                 logger.info(stats)
 
                 eval_stats.append(di.output.evaluateAgainst(lexicalized_l))

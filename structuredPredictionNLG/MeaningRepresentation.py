@@ -19,6 +19,7 @@ class MeaningRepresentation:
         # A string representation of the MeaningRepresantation, used primarily to compare MeaningRepresantation objects.
         # We store the value, so we do not have to reconstruct it.
         self.abstractMR = str()
+        self.nn_src = str()
 
         # This variable maps the variable values (e.g. @x@attr), to the corresponding lexicalized string values.
         # It is populated during the initial delexicalization of the MR, and used after generation for post-processing
