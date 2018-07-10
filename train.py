@@ -258,7 +258,8 @@ def train_model(model, fields, optim, data_type, opt_per_pred):
     opt_translate.replace_unk = False
     opt_translate.verbose = False
     opt_translate.block_ngram_repeat = False
-    opt_translate.gpu = opt.gpuid[0]
+    if opt.gpuid:
+        opt_translate.gpu = opt.gpuid[0]
 
     trunc_size = opt.truncated_decoder  # Badly named...
     shard_size = opt.max_generator_batches
@@ -320,6 +321,7 @@ def train_model(model, fields, optim, data_type, opt_per_pred):
             opt_translates = []
             for predicate in opt.parser.predicates:
                 opt_translate.predicate = predicate
+                opt_translate.batch_size = opt_per_pred[predicate].batch_size
                 opt_translate.src = 'cache/valid_src_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
                 opt_translate.tgt = 'cache/valid_eval_refs_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
                 opt_translate.output = 'result/{:s}/valid_res_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)

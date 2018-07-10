@@ -284,6 +284,8 @@ class RNNDecoderBase(nn.Module):
         if copy_attn:
             self._copy = True
         self._reuse_copy_attn = reuse_copy_attn
+        self.generator = None
+        self.shift_idx = None
 
     def forward(self, tgt, memory_bank, state, memory_lengths=None):
         """
@@ -501,7 +503,8 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             decoder_output, p_attn = self.attn(
                 rnn_output,
                 memory_bank.transpose(0, 1),
-                memory_lengths=memory_lengths)
+                memory_lengths=memory_lengths,
+                hard_attn_index=state.hard_mono_attn_idx)
             if self.context_gate is not None:
                 # TODO: context gate should be employed
                 # instead of second RNN transform.
@@ -511,6 +514,23 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             decoder_output = self.dropout(decoder_output)
             input_feed = decoder_output
 
+            if self.training:
+                for j, b in enumerate(tgt[i]):
+                    tgt_idx = tgt[i][j]
+                    idx_lst = tgt_idx.tolist()
+                    if not isinstance(idx_lst, (list,)):
+                        idx_lst = [idx_lst]
+                    if self.shift_idx in idx_lst:
+                        state.hard_mono_attn_idx[j] += 2
+            else:
+                for j, b in enumerate(decoder_output):
+                    out = self.generator.forward(b).data
+                    values, indices = torch.max(out, 0)
+                    idx_lst = indices.tolist()
+                    if not isinstance(idx_lst, (list,)):
+                        idx_lst = [idx_lst]
+                    if self.shift_idx in idx_lst:
+                        state.hard_mono_attn_idx[j] += 2
             decoder_outputs += [decoder_output]
             attns["std"] += [p_attn]
 
@@ -527,6 +547,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
                 attns["copy"] += [copy_attn]
             elif self._copy:
                 attns["copy"] = attns["std"]
+        # exit()
         # Return result.
         return hidden, decoder_outputs, attns
 
@@ -654,6 +675,8 @@ class RNNDecoderState(DecoderState):
         h_size = (batch_size, hidden_size)
         self.input_feed = self.hidden[0].data.new(*h_size).zero_() \
                               .unsqueeze(0)
+        # Makis: Storing the index for hard monotonic attention here
+        self.hard_mono_attn_idx = torch.zeros([batch_size, 1], dtype=torch.int32)
 
     @property
     def _all(self):

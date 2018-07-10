@@ -254,25 +254,6 @@ class Translator(object):
                       codecs.open(self.dump_beam, 'w', 'utf-8'))
         return all_scores
 
-    def _calc_sacre_bleu(self, src_list, eval_refs_f):
-        with open(eval_refs_f) as f:
-            content = f.readlines()
-        eval_refs = []
-        eval_ref_cluster = []
-        for x in content:
-            x = x.strip()
-            if x:
-                eval_ref_cluster.append(x)
-            else:
-                if eval_ref_cluster:
-                    eval_refs.append(eval_ref_cluster)
-                eval_ref_cluster = []
-        print(len(src_list))
-        print(len(eval_refs))
-        print(corpus_bleu(src_list, eval_refs, lowercase=True))
-        exit()
-        return corpus_bleu(src_list, eval_refs, lowercase=True)
-
     def translate_batch(self, batch, data):
         """
         Translate a batch of sentences.
@@ -290,10 +271,12 @@ class Translator(object):
 
         # (0) Prep each of the components of the search.
         # And helper method for reducing verbosity.
-        beam_size = self.beam_size
+        beam_size = 1 #self.beam_size
         batch_size = batch.batch_size
         data_type = data.data_type
         vocab = self.fields["tgt"].vocab
+
+        self.hard_mono_attn_idx = torch.zeros([batch_size * beam_size, 1], dtype=torch.int32)
 
         # Define a list of tokens to exclude from ngram-blocking
         # exclusion_list = ["<t>", "</t>", "."]

@@ -51,7 +51,6 @@ class TranslationBuilder(object):
         assert(len(translation_batch["gold_score"]) ==
                len(translation_batch["predictions"]))
         batch_size = batch.batch_size
-
         preds, pred_score, attn, gold_score, indices = list(zip(
             *sorted(zip(translation_batch["predictions"],
                         translation_batch["scores"],

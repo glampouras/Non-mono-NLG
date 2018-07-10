@@ -45,10 +45,8 @@ def parse_args():
     opt = parser.parse_args()
     opt.save_data = 'save_data/{:s}/'.format(opt.dataset)
 
-    save_data_path = os.path.abspath(opt.save_data)
-    model_dirname = os.path.dirname(save_data_path)
-    if not os.path.exists(model_dirname):
-        os.makedirs(model_dirname)
+    if not os.path.isdir(opt.save_data):
+        os.makedirs(opt.save_data)
 
     torch.manual_seed(opt.seed)
 

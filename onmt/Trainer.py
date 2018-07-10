@@ -179,7 +179,6 @@ class Trainer(object):
                 normalization += num_tokens
             else:
                 normalization += batch.batch_size
-
             if accum == self.grad_accum_count:
                 self._gradient_accumulation(
                     true_batchs, total_stats,

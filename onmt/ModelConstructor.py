@@ -182,6 +182,7 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
         tgt_embeddings.word_lut.weight = src_embeddings.word_lut.weight
 
     decoder = make_decoder(model_opt, tgt_embeddings)
+    decoder.shift_idx = fields["tgt"].vocab.stoi['@shift@']
 
     # Make NMTModel(= encoder + decoder).
     model = NMTModel(encoder, decoder)
@@ -225,6 +226,7 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
 
     # Add generator to model (this registers it as parameter of model).
     model.generator = generator
+    model.decoder.generator = generator
 
     # Make the whole model leverage GPU if indicated to do so.
     if gpu:
