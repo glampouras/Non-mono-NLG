@@ -336,15 +336,21 @@ def train_model(model, fields, optim, data_type, opt_per_pred):
                 #translator.n_best = 5
                 translator.translate(opt_translate.src_dir, opt_translate.src, opt_translate.tgt, opt_translate.batch_size, opt_translate.attn_debug)
                 opt_translates.append(copy(opt_translate))
-            corpusBLEU, bleu, rouge, coverage = evaluate(opt_translates)
-            #for predicate in opt.parser.predicates:
-            #    trainer[predicate].drop_checkpoint(opt_per_pred[predicate], epoch, corpusBLEU, bleu, rouge, coverage, fields[predicate], valid_stats[predicate])
+            corpusBLEU, bleu, rouge, coverage, bleu_per_predicate = evaluate(opt_translates)
+            for predicate in opt.parser.predicates:
+                trainer[predicate].drop_checkpoint(opt_per_pred[predicate], epoch, corpusBLEU, bleu, rouge, coverage, bleu_per_predicate[predicate], fields[predicate], valid_stats[predicate])
 
 def evaluate(opt_translates):
     eval_stats = []
     eval_results = []
 
+    eval_stats_per_predicate = {}
+    eval_results_per_predicate = {}
+
     for opt_translate in opt_translates:
+        eval_stats_per_predicate[opt_translate.predicate] = []
+        eval_results_per_predicate[opt_translate.predicate] = []
+
         src_lines = []
         with open(opt_translate.src, 'r') as f:
             src_lines = f.readlines()
@@ -359,6 +365,8 @@ def evaluate(opt_translates):
 
                 eval_stats.append(di.output.evaluateAgainst(lexicalized_l))
                 eval_results.append((lexicalized_l, eval_stats[-1].refs))
+                eval_stats_per_predicate[opt_translate.predicate].append(di.output.evaluateAgainst(lexicalized_l))
+                eval_results_per_predicate[opt_translate.predicate].append((lexicalized_l, eval_stats[-1].refs))
 
                 stats = '\nEREF: ' + str(eval_stats[-1].refs) + '\nBLEU: ' + str(eval_stats[-1].BLEU) + '\n'
                 logger.info(stats)
@@ -382,7 +390,11 @@ def evaluate(opt_translates):
     print("ROUGE:", rouge)
     print("COVERAGE:", coverage)
 
-    return corpusBLEU, bleu, rouge, coverage
+    bleu_per_predicate = {}
+    for predicate in eval_stats_per_predicate:
+        bleu_per_predicate[predicate] = numpy.average([e.BLEU for e in eval_stats_per_predicate[predicate]])
+
+    return corpusBLEU, bleu, rouge, coverage, bleu_per_predicate
 
 def check_save_result_path(path):
     save_result_path = os.path.abspath(path)
@@ -579,7 +591,6 @@ def main():
     opt.data = 'save_data/{:s}/'.format(opt.dataset)
     gen_templ = dataparser.get_onmt_file_templ(opt)
 
-    dataparser.predicates = ['inform']
     opt.parser = dataparser
     model = {}
     fields = {}

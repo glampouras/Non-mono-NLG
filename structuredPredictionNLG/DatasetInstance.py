@@ -320,29 +320,31 @@ class NLGOutput:
                     maxPrecision = precision
             '''
         evalStats.refs = ref_split
+        evalStats.best_ref = None
         if predicted:
             for ref in ref_split:
-                if len(predicted) >= 4:
+                if len(ref) >= 4:
                     bleuOriginal = sentence_bleu([ref], predicted)
-                    if bleuOriginal > maxBLEU:
-                        maxBLEU = bleuOriginal
-                elif len(predicted) == 3:
+                    bleuSmooth = sentence_bleu([ref], predicted, weights,
+                                                 smoothing_function=self.chencherry.method2)
+                elif len(ref) == 3:
                     bleuOriginal = sentence_bleu([ref], predicted, (0.33, 0.33, 0.33, 0.0))
-                    if bleuOriginal > maxBLEU:
-                        maxBLEU = bleuOriginal
-                elif len(predicted) == 2:
+                    bleuSmooth = sentence_bleu([ref], predicted, (0.33, 0.33, 0.33, 0.0),
+                                                 smoothing_function=self.chencherry.method2)
+                elif len(ref) == 2:
                     bleuOriginal = sentence_bleu([ref], predicted, (0.5, 0.5, 0.0, 0.0))
-                    if bleuOriginal > maxBLEU:
-                        maxBLEU = bleuOriginal
-                elif len(predicted) == 1:
+                    bleuSmooth = sentence_bleu([ref], predicted, (0.5, 0.5, 0.0, 0.0),
+                                                 smoothing_function=self.chencherry.method2)
+                elif len(ref) == 1:
                     bleuOriginal = sentence_bleu([ref], predicted, (1.0, 0.0, 0.0, 0.0))
-                    if bleuOriginal > maxBLEU:
-                        maxBLEU = bleuOriginal
+                    bleuSmooth = sentence_bleu([ref], predicted, (1.0, 0.0, 0.0, 0.0),
+                                                 smoothing_function=self.chencherry.method2)
+                if bleuOriginal > maxBLEU:
+                    maxBLEU = bleuOriginal
 
-                bleuSmooth = sentence_bleu([ref], predicted, weights,
-                                             smoothing_function=self.chencherry.method2)
                 if bleuSmooth > maxBLEUSmooth:
                     maxBLEUSmooth = bleuSmooth
+                    evalStats.best_ref = ref
             for ref in ref_split:
                 rougeOriginal = self.rouge_n(ref, predicted, 4)
                 if rougeOriginal > maxROUGE:

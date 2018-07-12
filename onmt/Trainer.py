@@ -13,6 +13,7 @@ import time
 import math
 import torch
 import torch.nn as nn
+import os
 
 import onmt
 import onmt.io
@@ -139,6 +140,9 @@ class Trainer(object):
                 """To enable accumulated gradients,
                    you must disable target sequence truncating."""
 
+        self.best_BLEU_so_far = 0.0
+        self.previous_checkpoint = False
+
         # Set model in training mode.
         self.model.train()
 
@@ -246,7 +250,7 @@ class Trainer(object):
     def epoch_step(self, ppl, epoch):
         return self.optim.update_learning_rate(ppl, epoch)
 
-    def drop_checkpoint(self, opt, epoch, corpusBLEU, bleu, rouge, coverage, fields, valid_stats):
+    def drop_checkpoint(self, opt, epoch, corpusBLEU, bleu, rouge, coverage, bleu_per_predicate, fields, valid_stats):
         """ Save a resumable checkpoint.
 
         Args:
@@ -255,34 +259,37 @@ class Trainer(object):
             fields (dict): fields and vocabulary
             valid_stats : statistics of last validation run
         """
-        real_model = (self.model.module
-                      if isinstance(self.model, nn.DataParallel)
-                      else self.model)
-        real_generator = (real_model.generator.module
-                          if isinstance(real_model.generator, nn.DataParallel)
-                          else real_model.generator)
+        if not self.previous_checkpoint or bleu_per_predicate > self.best_BLEU_so_far:
+            if self.previous_checkpoint:
+                os.remove(self.previous_checkpoint)
 
-        model_state_dict = real_model.state_dict()
-        model_state_dict = {k: v for k, v in model_state_dict.items()
-                            if 'generator' not in k}
-        generator_state_dict = real_generator.state_dict()
-        checkpoint = {
-            'model': model_state_dict,
-            'generator': generator_state_dict,
-            'vocab': onmt.io.save_fields_to_vocab(fields),
-            'opt': opt,
-            'epoch': epoch,
-            'optim': self.optim,
-        }
-        torch.save(checkpoint,
-                   '%s_e%d_corpusBLEU_%.2f_bleu_%.2f_rouge_%.2f_coverage_%.2f.pt'
-                   % (opt.save_model, epoch, corpusBLEU, bleu, rouge, coverage))
-        '''
-        torch.save(checkpoint,
-                   '%s_acc_%.2f_ppl_%.2f_e%d.pt'
-                   % (opt.save_model, valid_stats.accuracy(),
-                      valid_stats.ppl(), epoch))
-        '''
+            real_model = (self.model.module
+                          if isinstance(self.model, nn.DataParallel)
+                          else self.model)
+            real_generator = (real_model.generator.module
+                              if isinstance(real_model.generator, nn.DataParallel)
+                              else real_model.generator)
+
+            model_state_dict = real_model.state_dict()
+            model_state_dict = {k: v for k, v in model_state_dict.items()
+                                if 'generator' not in k}
+            generator_state_dict = real_generator.state_dict()
+            checkpoint = {
+                'model': model_state_dict,
+                'generator': generator_state_dict,
+                'vocab': onmt.io.save_fields_to_vocab(fields),
+                'opt': opt,
+                'epoch': epoch,
+                'optim': self.optim,
+            }
+            self.previous_checkpoint = '%s_e%d_bleuForPred_%.2f_corpusBLEU_%.2f_bleu_%.2f_rouge_%.2f_coverage_%.2f.pt' % (opt.save_model, epoch, bleu_per_predicate, corpusBLEU, bleu, rouge, coverage)
+            torch.save(checkpoint, self.previous_checkpoint)
+            '''
+            torch.save(checkpoint,
+                       '%s_acc_%.2f_ppl_%.2f_e%d.pt'
+                       % (opt.save_model, valid_stats.accuracy(),
+                          valid_stats.ppl(), epoch))
+            '''
 
     def _gradient_accumulation(self, true_batchs, total_stats,
                                report_stats, normalization, fields):

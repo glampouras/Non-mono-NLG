@@ -29,6 +29,9 @@ import numpy
 from nltk.translate.bleu_score import corpus_bleu
 from copy import copy
 
+from os import listdir
+from os.path import isfile, join
+
 
 parser = argparse.ArgumentParser(
     description='train.py',
@@ -247,103 +250,12 @@ def make_loss_compute(model, tgt_vocab, opt, train=True):
 
     return compute
 
-
-def train_model(model, fields, optim, data_type, opt_per_pred):
-    translate_parser = argparse.ArgumentParser(
-        description='translate',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    onmt.opts.add_md_help_argument(translate_parser)
-    onmt.opts.translate_opts(translate_parser)
-    opt_translate = translate_parser.parse_args(args=[])
-    opt_translate.replace_unk = False
-    opt_translate.verbose = False
-    opt_translate.block_ngram_repeat = False
-    if opt.gpuid:
-        opt_translate.gpu = opt.gpuid[0]
-
-    trunc_size = opt.truncated_decoder  # Badly named...
-    shard_size = opt.max_generator_batches
-    norm_method = opt.normalization
-    grad_accum_count = opt.accum_count
-
-    trainer = {}
-    for predicate in opt.parser.predicates:
-        train_loss = make_loss_compute(model[predicate], fields[predicate]["tgt"].vocab, opt_per_pred[predicate])
-        valid_loss = make_loss_compute(model[predicate], fields[predicate]["tgt"].vocab, opt_per_pred[predicate],
-                                       train=False)
-        trainer[predicate] = onmt.Trainer(model[predicate], train_loss, valid_loss, optim[predicate],
-                               trunc_size, shard_size, data_type[predicate],
-                               norm_method, grad_accum_count)
-
-    logger.info('')
-    logger.info('Start training...')
-    logger.info(' * number of epochs: %d, starting from Epoch %d' %
-                (opt.epochs + 1 - opt.start_epoch, opt.start_epoch))
-    logger.info(' * batch size: %d' % opt.batch_size)
-
-    for epoch in range(opt.start_epoch, opt.epochs + 1):
-        logger.info('')
-
-        train_stats = {}
-        valid_stats = {}
-        for predicate in opt.parser.predicates:
-            logger.info('Train predicate: %s' % predicate)
-            # 1. Train for one epoch on the training set.
-            train_iter = make_dataset_iter(lazily_load_dataset("train", opt_per_pred[predicate]),
-                                           fields[predicate], opt_per_pred[predicate])
-            train_stats[predicate] = trainer[predicate].train(train_iter, epoch, fields[predicate], report_func)
-            logger.info('Train perplexity: %g' % train_stats[predicate].ppl())
-            logger.info('Train accuracy: %g' % train_stats[predicate].accuracy())
-
-            # 2. Validate on the validation set.
-            valid_iter = make_dataset_iter(lazily_load_dataset("valid", opt_per_pred[predicate]),
-                                           fields[predicate], opt_per_pred[predicate],
-                                           is_train=False)
-            valid_stats[predicate] = trainer[predicate].validate(valid_iter)
-            logger.info('Validation perplexity: %g' % valid_stats[predicate].ppl())
-            logger.info('Validation accuracy: %g' % valid_stats[predicate].accuracy())
-
-            # 3. Log to remote server.
-            if opt_per_pred[predicate].exp_host:
-                train_stats[predicate].log("train", experiment, optim[predicate].lr)
-                valid_stats[predicate].log("valid", experiment, optim[predicate].lr)
-            if opt_per_pred[predicate].tensorboard:
-                train_stats[predicate].log_tensorboard("train", writer, optim[predicate].lr, epoch)
-                train_stats[predicate].log_tensorboard("valid", writer, optim[predicate].lr, epoch)
-
-            # 4. Update the learning rate
-            decay = trainer[predicate].epoch_step(valid_stats[predicate].ppl(), epoch)
-            if decay:
-                logger.info("Decaying learning rate to %g" % trainer[predicate].optim.lr)
-
-        # 5. Drop a checkpoint if needed.
-        if epoch % 10 == 0: #epoch >= opt.start_checkpoint_at:
-            opt_translates = []
-            for predicate in opt.parser.predicates:
-                opt_translate.predicate = predicate
-                opt_translate.batch_size = opt_per_pred[predicate].batch_size
-                opt_translate.src = 'cache/valid_src_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
-                opt_translate.tgt = 'cache/valid_eval_refs_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
-                opt_translate.output = 'result/{:s}/valid_res_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)
-                #opt_translate.model = '%s_acc_%.2f_ppl_%.2f_e%d.pt' % (
-                #opt_per_pred[predicate].save_model, valid_stats[predicate].accuracy(), valid_stats[predicate].ppl(), epoch)
-
-                check_save_result_path(opt_translate.output)
-
-                translator = make_translator(opt_translate, report_score=False, logger=logger, fields=fields[predicate], model=trainer[predicate].model, model_opt=opt_per_pred[predicate])
-                translator.output_beam = 'result/{:s}/valid_res_beam_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)
-                #translator.beam_size = 5
-                #translator.n_best = 5
-                translator.translate(opt_translate.src_dir, opt_translate.src, opt_translate.tgt, opt_translate.batch_size, opt_translate.attn_debug)
-                opt_translates.append(copy(opt_translate))
-            corpusBLEU, bleu, rouge, coverage = evaluate(opt_translates)
-            for predicate in opt.parser.predicates:
-                trainer[predicate].drop_checkpoint(opt_per_pred[predicate], epoch, corpusBLEU, bleu, rouge, coverage, fields[predicate], valid_stats[predicate])
-
 def evaluate(opt_translates):
     eval_stats = []
     eval_results = []
 
+    not_in_train = 0
+    total = 0
     for opt_translate in opt_translates:
         src_lines = []
         with open(opt_translate.src, 'r') as f:
@@ -351,14 +263,19 @@ def evaluate(opt_translates):
         with open(opt_translate.output, 'r') as handle:
             lines = [line.strip() for line in handle]
             for i, l in enumerate(lines):
-                di = opt.parser.dev_src_to_di[opt_translate.predicate][src_lines[i].strip()]
+                di = opt.parser.test_src_to_di[opt_translate.predicate][src_lines[i].strip()]
+                total += 1
+                stats = '\n++++NOT IN TRAIN++++'
+                if src_lines[i].strip() not in opt.parser.train_src_to_di[opt_translate.predicate]:
+                    not_in_train += 1
+                    stats = ''
                 lexicalized_l = lexicalize_word_sequence(l.split(), di.input.delexicalizationMap)
 
-                stats = '\nsrc:' + str(src_lines[i]) + '\nMR:' + str(di.input.attributeValues) + '\nREAL: ' + ' '.join(lexicalized_l) + '\nDREF: ' + str(di.directReference)
+                stats += '\nSRC:' + str(src_lines[i]) + 'PRED:' + str(opt_translate.predicate) + '\nMR:' + str(di.input.attributeValues) + '\nREAL: ' + ' '.join(lexicalized_l) + '\nDREF: ' + str(di.directReference)
                 logger.info(stats)
 
                 eval_stats.append(di.output.evaluateAgainst(lexicalized_l))
-                eval_results.append((lexicalized_l, eval_stats[-1].refs))
+                eval_results.append((" ".join(lexicalized_l), di.output.evaluationReferences))
 
                 stats = '\nEREF: ' + str(eval_stats[-1].refs) + '\nBLEU: ' + str(eval_stats[-1].BLEU) + '\n'
                 logger.info(stats)
@@ -381,6 +298,7 @@ def evaluate(opt_translates):
     print("smoothBLEU:", numpy.average([e.BLEUSmooth for e in eval_stats]))
     print("ROUGE:", rouge)
     print("COVERAGE:", coverage)
+    print("NOT IN TRAIN:", not_in_train, '/', total)
 
     return corpusBLEU, bleu, rouge, coverage
 
@@ -605,13 +523,14 @@ def main():
         opt_per_pred[predicate].file_templ = gen_templ.format(predicate)
         opt_per_pred[predicate].save_model = 'save_model/{:s}/{:s}'.format(opt_per_pred[predicate].dataset, predicate)
 
-        poss_models = [f for f in listdir(mypath) if isfile(join(mypath, f))]
-        print(poss_models)
-        exit()
-        checkpoint_file = '%s_e%d_corpusBLEU_%.2f_bleu_%.2f_rouge_%.2f_coverage_%.2f.pt' % (opt.save_model, epoch, corpusBLEU, bleu, rouge, coverage)
-        logger.info('Loading checkpoint for %s from %s' % predicate, checkpoint_file)
-        checkpoint = torch.load(opt_per_pred[predicate].train_from,
-                                map_location=lambda storage, loc: storage)
+        # Get the saved model with the highest reported BLEU in dev
+        dir_path = 'save_model/{:s}/'.format(opt_per_pred[predicate].dataset)
+        poss_models = [f for f in listdir(dir_path) if isfile(join(dir_path, f)) and f.startswith(predicate + "_e") and '_bleuForPred_' in f and '_corpusBLEU_' in f]
+        bleu_models = [float(f[f.find('_bleuForPred_') + 13:f.find('_corpusBLEU_')]) for f in poss_models]
+        checkpoint_file = 'save_model/{:s}/{:s}'.format(opt_per_pred[predicate].dataset, poss_models[bleu_models.index(max(bleu_models))])
+
+        logger.info('Loading checkpoint from %s' % checkpoint_file)
+        checkpoint = torch.load(checkpoint_file, map_location=lambda storage, loc: storage)
 
         # Peek the fisrt dataset to determine the data_type.
         # (All datasets have the same data_type).
@@ -627,6 +546,7 @@ def main():
         # Load model.
         model[predicate] = build_model(opt_per_pred[predicate], fields[predicate], checkpoint)
         model[predicate].predicate = predicate
+        model[predicate].eval()
         tally_parameters(model[predicate])
         check_save_model_path()
 
@@ -635,18 +555,18 @@ def main():
 
         opt_translate.predicate = predicate
         opt_translate.batch_size = opt_per_pred[predicate].batch_size
-        opt_translate.src = 'cache/valid_src_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
-        opt_translate.tgt = 'cache/valid_eval_refs_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
-        opt_translate.output = 'result/{:s}/valid_res_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)
+        opt_translate.src = 'cache/test_src_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
+        opt_translate.tgt = 'cache/test_eval_refs_{:s}.txt'.format(opt_per_pred[predicate].file_templ)
+        opt_translate.output = 'result/{:s}/test_res_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)
 
         check_save_result_path(opt_translate.output)
-
-        translator = make_translator(opt_translate, report_score=False, logger=logger, fields=fields[predicate], model=model[predicate], model_opt=opt_per_pred[predicate])
-        translator.output_beam = 'result/{:s}/valid_res_beam_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)
-        #translator.beam_size = 5
-        #translator.n_best = 5
-        translator.translate(opt_translate.src_dir, opt_translate.src, opt_translate.tgt, opt_translate.batch_size, opt_translate.attn_debug)
-        opt_translates.append(copy(opt_translate))
+        if os.path.isfile(opt_translate.src) and os.path.isfile(opt_translate.tgt):
+            translator = make_translator(opt_translate, report_score=False, logger=logger, fields=fields[predicate], model=model[predicate], model_opt=opt_per_pred[predicate])
+            translator.output_beam = 'result/{:s}/test_res_beam_{:s}.txt'.format(opt_per_pred[predicate].dataset, opt_per_pred[predicate].file_templ)
+            #translator.beam_size = 5
+            #translator.n_best = 5
+            translator.translate(opt_translate.src_dir, opt_translate.src, opt_translate.tgt, opt_translate.batch_size, opt_translate.attn_debug)
+            opt_translates.append(copy(opt_translate))
     evaluate(opt_translates)
 
 if __name__ == "__main__":

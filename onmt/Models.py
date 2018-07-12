@@ -514,23 +514,24 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             decoder_output = self.dropout(decoder_output)
             input_feed = decoder_output
 
-            if self.training:
-                for j, b in enumerate(tgt[i]):
-                    tgt_idx = tgt[i][j]
-                    idx_lst = tgt_idx.tolist()
-                    if not isinstance(idx_lst, (list,)):
-                        idx_lst = [idx_lst]
-                    if self.shift_idx in idx_lst:
-                        state.hard_mono_attn_idx[j] += 2
-            else:
-                for j, b in enumerate(decoder_output):
-                    out = self.generator.forward(b).data
-                    values, indices = torch.max(out, 0)
-                    idx_lst = indices.tolist()
-                    if not isinstance(idx_lst, (list,)):
-                        idx_lst = [idx_lst]
-                    if self.shift_idx in idx_lst:
-                        state.hard_mono_attn_idx[j] += 2
+            if state.hard_mono_attn_idx is not None:
+                if self.training:
+                    for j, b in enumerate(tgt[i]):
+                        tgt_idx = tgt[i][j]
+                        idx_lst = tgt_idx.tolist()
+                        if not isinstance(idx_lst, (list,)):
+                            idx_lst = [idx_lst]
+                        if self.shift_idx in idx_lst:
+                            state.hard_mono_attn_idx[j] += 2
+                else:
+                    for j, b in enumerate(decoder_output):
+                        out = self.generator.forward(b).data
+                        values, indices = torch.max(out, 0)
+                        idx_lst = indices.tolist()
+                        if not isinstance(idx_lst, (list,)):
+                            idx_lst = [idx_lst]
+                        if self.shift_idx in idx_lst:
+                            state.hard_mono_attn_idx[j] += 2
             decoder_outputs += [decoder_output]
             attns["std"] += [p_attn]
 
@@ -657,7 +658,7 @@ class DecoderState(object):
 
 
 class RNNDecoderState(DecoderState):
-    def __init__(self, hidden_size, rnnstate):
+    def __init__(self, hidden_size, rnnstate, hard_mono_attn_idx=None):
         """
         Args:
             hidden_size (int): the size of hidden layer of the decoder.
@@ -675,8 +676,7 @@ class RNNDecoderState(DecoderState):
         h_size = (batch_size, hidden_size)
         self.input_feed = self.hidden[0].data.new(*h_size).zero_() \
                               .unsqueeze(0)
-        # Makis: Storing the index for hard monotonic attention here
-        self.hard_mono_attn_idx = torch.zeros([batch_size, 1], dtype=torch.int32)
+        self.hard_mono_attn_idx = hard_mono_attn_idx
 
     @property
     def _all(self):
