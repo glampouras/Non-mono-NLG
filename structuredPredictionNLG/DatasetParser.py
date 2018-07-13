@@ -23,7 +23,7 @@ from nltk.util import ngrams
 '''
 class DatasetParser:
 
-    def __init__(self, trainingFile, developmentFile, testingFile, dataset, opt):
+    def __init__(self, trainingFile, developmentFile, testingFile, dataset, opt, light=False):
         # self.base_dir = '../'
         self.base_dir = ''
 
@@ -57,7 +57,7 @@ class DatasetParser:
 
         self.check_cache_path()
 
-        if (opt.reset or not self.loadTrainingLists(opt.trim, opt.full_delex, opt.infer_MRs)) and trainingFile:
+        if (opt.reset or not self.loadTrainingLists(opt.trim, opt.full_delex, opt.infer_MRs, light)) and trainingFile:
             self.predicates = []
             self.attributes = {}
             self.valueAlignments = {}
@@ -131,32 +131,32 @@ class DatasetParser:
         else:
             self.initializeActionSpace()
 
-        self.most_common_words = set()
-        for predicate in self.trainingInstances:
-            for word, count in self.availableWordCounts[predicate].most_common():
-                inAll = True
-                for attr in self.attributes[predicate]:
-                    if word not in self.availableWordActions[predicate][attr]:
-                        inAll = False
-                        break
-                if inAll:
-                    self.most_common_words.add(word)
-                    if len(self.most_common_words) > 30:
-                        break
-        # Silly way of filtering at least one occurence
-        #total_relexed_ngram_lists_tmp = set()
-        for predicate in self.trainingInstances:
-            for di in self.trainingInstances[predicate]:
-                for ref in di.output.evaluationReferences:
-                    refSeq = ref.split(" ")
-                    for n_gram in self.get_ngram_list(refSeq, min=3):
-                        #if n_gram in total_relexed_ngram_lists_tmp:
-                        self.total_relexed_ngram_lists.add(n_gram)
-                        #else:
-                        #    total_relexed_ngram_lists_tmp.add(n_gram)
-
-        scp = SimpleContentPredictor(self.dataset, self.attributes, self.trainingInstances)
-        if (opt.reset or not self.loadDevelopmentLists(opt.full_delex)) and developmentFile:
+        if not light:
+            self.most_common_words = set()
+            for predicate in self.trainingInstances:
+                for word, count in self.availableWordCounts[predicate].most_common():
+                    inAll = True
+                    for attr in self.attributes[predicate]:
+                        if word not in self.availableWordActions[predicate][attr]:
+                            inAll = False
+                            break
+                    if inAll:
+                        self.most_common_words.add(word)
+                        if len(self.most_common_words) > 30:
+                            break
+            # Silly way of filtering at least one occurence
+            #total_relexed_ngram_lists_tmp = set()
+            for predicate in self.trainingInstances:
+                for di in self.trainingInstances[predicate]:
+                    for ref in di.output.evaluationReferences:
+                        refSeq = ref.split(" ")
+                        for n_gram in self.get_ngram_list(refSeq, min=3):
+                            #if n_gram in total_relexed_ngram_lists_tmp:
+                            self.total_relexed_ngram_lists.add(n_gram)
+                            #else:
+                            #    total_relexed_ngram_lists_tmp.add(n_gram)
+        scp = False
+        if (opt.reset or not self.loadDevelopmentLists(opt.full_delex, light)) and developmentFile:
             devs = self.createLists(self.base_dir + developmentFile, full_delex=opt.full_delex)
             # Create the evaluation refs for development data, as described in https://github.com/tuetschek/e2e-metrics/tree/master/example-inputs
             self.developmentInstances = {}
@@ -182,6 +182,7 @@ class DatasetParser:
 
                     self.developmentInstances[predicate].append(di)
 
+            scp = SimpleContentPredictor(self.dataset, self.attributes, self.trainingInstances)
             for predicate in self.developmentInstances:
                 if predicate not in self.dev_src_to_di:
                     self.dev_src_to_di[predicate] = {}
@@ -213,7 +214,7 @@ class DatasetParser:
                         for attr in di.input.attributeSubjects:
                             self.available_subjects.add(di.input.attributeSubjects[attr])
             self.writeTrainingLists(opt.trim, opt.full_delex, opt.infer_MRs)
-        if (opt.reset or not self.loadTestingLists(opt.full_delex)) and testingFile:
+        if (opt.reset or not self.loadTestingLists(opt.full_delex, light)) and testingFile:
             tests = self.createLists(self.base_dir + testingFile, full_delex=opt.full_delex)
 
             self.testingInstances = {}
@@ -242,6 +243,8 @@ class DatasetParser:
 
                     self.testingInstances[predicate].append(di)
 
+            if not scp:
+                scp = SimpleContentPredictor(self.dataset, self.attributes, self.trainingInstances)
             for predicate in self.testingInstances:
                 if predicate not in self.test_src_to_di:
                     self.test_src_to_di[predicate] = {}
@@ -257,8 +260,8 @@ class DatasetParser:
 
                     self.test_src_to_di[predicate][di.input.nn_src] = di
             self.writeTestingLists(opt.full_delex)
-
-        self.write_onmt_data(opt)
+        if not light:
+            self.write_onmt_data(opt)
 
     def get_ngram_list(self, word_sequence, min=1):
         ngram_list = []
@@ -1368,7 +1371,7 @@ class DatasetParser:
             os.makedirs('cache')
 
 
-    def loadTrainingLists(self, trim, full_delex, infer_MRs):
+    def loadTrainingLists(self, trim, full_delex, infer_MRs, light=False):
         print("Attempting to load training data...")
         self.vocabulary = False
         self.predicates = False
@@ -1393,15 +1396,15 @@ class DatasetParser:
         else:
             fileSuffix = self.dataset_name + '_trim=' + str(trim) + '_full_delex=' + str(full_delex) + '.pickle'
 
-        if os.path.isfile(self.base_dir + 'cache/vocabulary_' + fileSuffix):
+        if not light and os.path.isfile(self.base_dir + 'cache/vocabulary_' + fileSuffix):
             with open(self.base_dir + 'cache/vocabulary_' + fileSuffix, 'rb') as handle:
                 self.vocabulary = pickle.load(handle)
-        else:
+        elif not light:
             fileNotFound = True
-        if os.path.isfile(self.base_dir + 'cache/vocabulary_per_attr_' + fileSuffix):
+        if not light and os.path.isfile(self.base_dir + 'cache/vocabulary_per_attr_' + fileSuffix):
             with open(self.base_dir + 'cache/vocabulary_per_attr_' + fileSuffix, 'rb') as handle:
                 self.vocabulary_per_attr = pickle.load(handle)
-        else:
+        elif not light:
             fileNotFound = True
         if os.path.isfile(self.base_dir + 'cache/predicates_' + fileSuffix):
             with open(self.base_dir + 'cache/predicates_' + fileSuffix, 'rb') as handle:
@@ -1423,15 +1426,15 @@ class DatasetParser:
                 self.available_subjects = pickle.load(handle)
         else:
             fileNotFound = True
-        if os.path.isfile(self.base_dir + 'cache/valueAlignments_' + fileSuffix):
+        if not light and os.path.isfile(self.base_dir + 'cache/valueAlignments_' + fileSuffix):
             with open(self.base_dir + 'cache/valueAlignments_' + fileSuffix, 'rb') as handle:
                 self.valueAlignments = pickle.load(handle)
-        else:
+        elif not light:
             fileNotFound = True
-        if os.path.isfile(self.base_dir + 'cache/trainingInstances_' + fileSuffix):
+        if not light and os.path.isfile(self.base_dir + 'cache/trainingInstances_' + fileSuffix):
             with open(self.base_dir + 'cache/trainingInstances_' + fileSuffix, 'rb') as handle:
                 self.trainingInstances = pickle.load(handle)
-        else:
+        elif not light:
             fileNotFound = True
         if os.path.isfile(self.base_dir + 'cache/maxWordSequenceLength_' + fileSuffix):
             with open(self.base_dir + 'cache/maxWordSequenceLength_' + fileSuffix, 'rb') as handle:
@@ -1439,16 +1442,16 @@ class DatasetParser:
         else:
             fileNotFound = True
 
-        if os.path.isfile(self.base_dir + 'cache/ngramListsPerWordSequence_' + fileSuffix):
+        if not light and os.path.isfile(self.base_dir + 'cache/ngramListsPerWordSequence_' + fileSuffix):
             with open(self.base_dir + 'cache/ngramListsPerWordSequence_' + fileSuffix, 'rb') as handle:
                 self.ngram_lists_per_word_sequence = pickle.load(handle)
-        else:
+        elif not light:
             fileNotFound = True
 
-        if os.path.isfile(self.base_dir + 'cache/ngramListsPerRelexedWordSequence_' + fileSuffix):
+        if not light and os.path.isfile(self.base_dir + 'cache/ngramListsPerRelexedWordSequence_' + fileSuffix):
             with open(self.base_dir + 'cache/ngramListsPerRelexedWordSequence_' + fileSuffix, 'rb') as handle:
                 self.ngram_lists_per_relexed_word_sequence = pickle.load(handle)
-        else:
+        elif not light:
             fileNotFound = True
 
         if os.path.isfile(self.base_dir + 'cache/train_src_to_di_' + fileSuffix):
@@ -1463,7 +1466,7 @@ class DatasetParser:
         print("failed!")
         return False
 
-    def loadDevelopmentLists(self, full_delex):
+    def loadDevelopmentLists(self, full_delex, light=False):
         print("Attempting to load development data...")
         self.developmentInstances = {}
 
@@ -1472,7 +1475,7 @@ class DatasetParser:
         else:
             full_delex = 'false'
 
-        if os.path.isfile(self.base_dir + 'cache/developmentInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle'):
+        if not light and os.path.isfile(self.base_dir + 'cache/developmentInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle'):
             with open(self.base_dir + 'cache/developmentInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'rb') as handle:
                 self.developmentInstances = pickle.load(handle)
 
@@ -1480,13 +1483,13 @@ class DatasetParser:
             with open(self.base_dir + 'cache/dev_src_to_di_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'rb') as handle:
                 self.dev_src_to_di = pickle.load(handle)
 
-        if self.developmentInstances and self.dev_src_to_di:
+        if (light or self.developmentInstances) and self.dev_src_to_di:
             print("done!")
             return True
         print("failed!")
         return False
 
-    def loadTestingLists(self, full_delex):
+    def loadTestingLists(self, full_delex, light=False):
         print("Attempting to load testing data...")
         self.testingInstances = {}
 
@@ -1495,7 +1498,7 @@ class DatasetParser:
         else:
             full_delex = 'false'
 
-        if os.path.isfile(self.base_dir + 'cache/testingInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle'):
+        if not light and os.path.isfile(self.base_dir + 'cache/testingInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle'):
             with open(self.base_dir + 'cache/testingInstances_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'rb') as handle:
                 self.testingInstances = pickle.load(handle)
 
@@ -1503,7 +1506,7 @@ class DatasetParser:
             with open(self.base_dir + 'cache/test_src_to_di_' + self.dataset_name + '_full_delex=' + str(full_delex) + '.pickle', 'rb') as handle:
                 self.test_src_to_di = pickle.load(handle)
 
-        if self.testingInstances and self.test_src_to_di:
+        if (light or self.testingInstances) and self.test_src_to_di:
             print("done!")
             return True
         print("failed!")

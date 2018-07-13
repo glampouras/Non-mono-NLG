@@ -582,11 +582,11 @@ def show_optimizer_state(optim):
 def main():
     # load the training data!
     if opt.dataset.lower() == 'e2e':
-        dataparser = DatasetParser('data/e2e/trainset.csv', 'data/e2e/devset.csv', 'data/e2e/testset_w_refs.csv', 'E2E', opt)
+        dataparser = DatasetParser('data/e2e/trainset.csv', 'data/e2e/devset.csv', 'data/e2e/testset_w_refs.csv', 'E2E', opt, light=True)
     elif opt.dataset.lower() == 'webnlg':
-        dataparser = DatasetParser('data/webNLG_challenge_data/train', 'data/webNLG_challenge_data/dev', False, 'webNLG', opt)
+        dataparser = DatasetParser('data/webNLG_challenge_data/train', 'data/webNLG_challenge_data/dev', False, 'webNLG', opt, light=True)
     elif opt.dataset.lower() == 'sfhotel':
-        dataparser = DatasetParser('data/sfx_data/sfxhotel/train.json', 'data/sfx_data/sfxhotel/valid.json', 'data/sfx_data/sfxhotel/test.json', 'SFHotel', opt)
+        dataparser = DatasetParser('data/sfx_data/sfxhotel/train.json', 'data/sfx_data/sfxhotel/valid.json', 'data/sfx_data/sfxhotel/test.json', 'SFHotel', opt, light=True)
 
     opt.data = 'save_data/{:s}/'.format(opt.dataset)
     gen_templ = dataparser.get_onmt_file_templ(opt)
