@@ -1582,8 +1582,8 @@ class DatasetParser:
                 with open(train_src_templ.format(predicate), 'w') as handle:
                     handle.writelines([item.input.nn_src + '\n' for item in self.trainingInstances[predicate]])
                 with open(train_tgt_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.trainingInstances[predicate]])
-                    handle.writelines(["%s\n" % " ".join([w.label for i, w in enumerate(item.directReferenceSequence) if i != len(item.directReferenceSequence)-1 or w.label != Action.TOKEN_SHIFT]) for item in self.trainingInstances[predicate]])
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.trainingInstances[predicate]])
+                    # handle.writelines(["%s\n" % " ".join([w.label for i, w in enumerate(item.directReferenceSequence) if i != len(item.directReferenceSequence)-1 or w.label != Action.TOKEN_SHIFT]) for item in self.trainingInstances[predicate]])
                 with open(train_eval_refs_templ.format(predicate), 'w') as handle:
                     for di in self.trainingInstances[predicate]:
                         handle.writelines(["%s\n" % item for item
@@ -1594,8 +1594,8 @@ class DatasetParser:
                 with open(valid_src_templ.format(predicate), 'w') as handle:
                     handle.writelines([item.input.nn_src + '\n' for item in self.developmentInstances[predicate]])
                 with open(valid_tgt_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.developmentInstances[predicate]])
-                    handle.writelines(["%s\n" % " ".join([w.label for i, w in enumerate(item.directReferenceSequence) if i != len(item.directReferenceSequence)-1 or w.label != Action.TOKEN_SHIFT]) for item in self.developmentInstances[predicate]])
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.developmentInstances[predicate]])
+                    # handle.writelines(["%s\n" % " ".join([w.label for i, w in enumerate(item.directReferenceSequence) if i != len(item.directReferenceSequence)-1 or w.label != Action.TOKEN_SHIFT]) for item in self.developmentInstances[predicate]])
                 with open(valid_eval_refs_templ.format(predicate), 'w') as handle:
                     for di in self.developmentInstances[predicate]:
                         handle.writelines(["%s\n" % item for item
@@ -1631,8 +1631,8 @@ class DatasetParser:
                 with open(test_src_templ.format(predicate), 'w') as handle:
                     handle.writelines([item.input.nn_src + '\n' for item in self.testingInstances[predicate]])
                 with open(test_tgt_templ.format(predicate), 'w') as handle:
-                    # handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.testingInstances[predicate]])
-                    handle.writelines(["%s\n" % " ".join([w.label for i, w in enumerate(item.directReferenceSequence) if i != len(item.directReferenceSequence)-1 or w.label != Action.TOKEN_SHIFT]) for item in self.testingInstances[predicate]])
+                    handle.writelines(["%s\n" % " ".join([w.label for w in item.directReferenceSequence if w.label != Action.TOKEN_SHIFT]) for item in self.testingInstances[predicate]])
+                    # handle.writelines(["%s\n" % " ".join([w.label for i, w in enumerate(item.directReferenceSequence) if i != len(item.directReferenceSequence)-1 or w.label != Action.TOKEN_SHIFT]) for item in self.testingInstances[predicate]])
                 with open(test_eval_refs_templ.format(predicate), 'w') as handle:
                     for di in self.testingInstances[predicate]:
                         handle.writelines(["%s\n" % item for item

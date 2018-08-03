@@ -503,8 +503,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             decoder_output, p_attn = self.attn(
                 rnn_output,
                 memory_bank.transpose(0, 1),
-                memory_lengths=memory_lengths,
-                hard_attn_index=state.hard_mono_attn_idx)
+                memory_lengths=memory_lengths)
             if self.context_gate is not None:
                 # TODO: context gate should be employed
                 # instead of second RNN transform.

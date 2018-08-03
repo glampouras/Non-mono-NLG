@@ -9,14 +9,10 @@ class GlobalAttention(nn.Module):
     Global attention takes a matrix and a query vector. It
     then computes a parameterized convex combination of the matrix
     based on the input query.
-
     Constructs a unit mapping a query `q` of size `dim`
     and a source matrix `H` of size `n x dim`, to an output
     of size `dim`.
-
-
     .. mermaid::
-
        graph BT
           A[Query]
           subgraph RNN
@@ -34,29 +30,21 @@ class GlobalAttention(nn.Module):
           D -.-> G
           E -.-> G
           F --> G
-
     All models compute the output as
     :math:`c = \sum_{j=1}^{SeqLength} a_j H_j` where
     :math:`a_j` is the softmax of a score function.
     Then then apply a projection layer to [q, c].
-
     However they
     differ on how they compute the attention score.
-
     * Luong Attention (dot, general):
        * dot: :math:`score(H_j,q) = H_j^T q`
        * general: :math:`score(H_j, q) = H_j^T W_a q`
-
-
     * Bahdanau Attention (mlp):
        * :math:`score(H_j, q) = v_a^T tanh(W_a q + U_a h_j)`
-
-
     Args:
        dim (int): dimensionality of query and key
        coverage (bool): use coverage term
        attn_type (str): type of attention to use, options [dot,general,mlp]
-
     """
 
     def __init__(self, dim, coverage=False, attn_type="dot"):
@@ -88,12 +76,10 @@ class GlobalAttention(nn.Module):
         Args:
           h_t (`FloatTensor`): sequence of queries `[batch x tgt_len x dim]`
           h_s (`FloatTensor`): sequence of sources `[batch x src_len x dim]`
-
         Returns:
           :obj:`FloatTensor`:
            raw attention scores (unnormalized) for each src index
           `[batch x tgt_len x src_len]`
-
         """
 
         # Check input sizes
@@ -126,22 +112,20 @@ class GlobalAttention(nn.Module):
 
             return self.v(wquh.view(-1, dim)).view(tgt_batch, tgt_len, src_len)
 
-    def forward(self, input, memory_bank, memory_lengths=None, coverage=None, hard_attn_index=None):
+    def forward(self, input, memory_bank, memory_lengths=None, coverage=None):
         """
-
         Args:
           input (`FloatTensor`): query vectors `[batch x tgt_len x dim]`
           memory_bank (`FloatTensor`): source vectors `[batch x src_len x dim]`
           memory_lengths (`LongTensor`): the source context lengths `[batch]`
           coverage (`FloatTensor`): None (not supported yet)
-
         Returns:
           (`FloatTensor`, `FloatTensor`):
-
           * Computed vector `[tgt_len x batch x dim]`
           * Attention distribtutions for each query
              `[tgt_len x batch x src_len]`
         """
+
         # one step input
         if input.dim() == 2:
             one_step = True
@@ -164,35 +148,21 @@ class GlobalAttention(nn.Module):
             memory_bank += self.linear_cover(cover).view_as(memory_bank)
             memory_bank = self.tanh(memory_bank)
 
-        # Hard Monotonic Attn
-        hard_memory_bank = memory_bank.clone()
-        if hard_attn_index is not None:
-            for b, batched_memory in enumerate(hard_memory_bank):
-                for i, sub_t in enumerate(batched_memory):
-                    if i != hard_attn_index[b] and i != hard_attn_index[b] + 1:
-                        sub_t.fill_(0)
-
         # compute attention scores, as in Luong et al.
-        align = self.score(input, hard_memory_bank)
+        align = self.score(input, memory_bank)
+
         if memory_lengths is not None:
             mask = sequence_mask(memory_lengths)
             mask = mask.unsqueeze(1)  # Make it broadcastable.
             align.data.masked_fill_(1 - mask, -float('inf'))
 
-        if hard_attn_index is None:
-            # Softmax to normalize attention weights
-            align_vectors = self.sm(align.view(batch * targetl, sourcel))
-        else:
-            # Makis: We do not wish to normalize attention_weights in hard_monotonic_attn
-            align_vectors = align.view(batch * targetl, sourcel)
+        # Softmax to normalize attention weights
+        align_vectors = self.sm(align.view(batch * targetl, sourcel))
         align_vectors = align_vectors.view(batch, targetl, sourcel)
 
         # each context vector c_t is the weighted average
         # over all the source hidden states
-        c = torch.bmm(align_vectors, hard_memory_bank)
-
-        #print('align_vectors')
-        #print(align_vectors)
+        c = torch.bmm(align_vectors, memory_bank)
 
         # concatenate
         concat_c = torch.cat([c, input], 2).view(batch * targetl, dim * 2)
@@ -224,4 +194,5 @@ class GlobalAttention(nn.Module):
             aeq(targetl, targetl_)
             aeq(batch, batch_)
             aeq(sourcel, sourcel_)
+
         return attn_h, align_vectors

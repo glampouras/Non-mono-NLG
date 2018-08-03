@@ -271,7 +271,7 @@ class Translator(object):
 
         # (0) Prep each of the components of the search.
         # And helper method for reducing verbosity.
-        beam_size = 1 #self.beam_size
+        beam_size = self.beam_size
         batch_size = batch.batch_size
         data_type = data.data_type
         vocab = self.fields["tgt"].vocab
