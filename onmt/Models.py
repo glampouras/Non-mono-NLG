@@ -286,8 +286,9 @@ class RNNDecoderBase(nn.Module):
         self._reuse_copy_attn = reuse_copy_attn
         self.generator = None
         self.shift_idx = None
+        self.hard_mono_embeddings = None
 
-    def forward(self, tgt, memory_bank, state, memory_lengths=None):
+    def forward(self, tgt, memory_bank, state, hard_mono_attn_over, memory_lengths=None):
         """
         Args:
             tgt (`LongTensor`): sequences of padded tokens
@@ -315,7 +316,7 @@ class RNNDecoderBase(nn.Module):
 
         # Run the forward pass of the RNN.
         decoder_final, decoder_outputs, attns = self._run_forward_pass(
-            tgt, memory_bank, state, memory_lengths=memory_lengths)
+            tgt, memory_bank, state, hard_mono_attn_over, memory_lengths=memory_lengths)
 
         # Update the state with the result.
         final_output = decoder_outputs[-1]
@@ -466,7 +467,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
           G --> H
     """
 
-    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None):
+    def _run_forward_pass(self, tgt, memory_bank, state, hard_mono_attn_over, memory_lengths=None):
         """
         See StdRNNDecoder._run_forward_pass() for description
         of arguments and return values.
@@ -489,6 +490,20 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         emb = self.embeddings(tgt)
         assert emb.dim() == 3  # len x batch x embedding_dim
 
+        hard_attr, hard_val = hard_mono_attn_over
+        emb_hard_attr = self.hard_mono_embeddings(hard_attr)
+        if len(emb) != len(emb_hard_attr) and len(emb) != len(emb_hard_attr) -1:
+            print('----')
+            print(len(emb))
+            print(len(emb_hard_attr))
+        assert emb_hard_attr.dim() == 3  # len x batch x embedding_dim
+        emb_hard_attr = emb_hard_attr.split(1)
+
+
+        emb_hard_val = self.hard_mono_embeddings(hard_val)
+        assert emb_hard_val.dim() == 3  # len x batch x embedding_dim
+        emb_hard_val = emb_hard_val.split(1)
+
         hidden = state.hidden
         coverage = state.coverage.squeeze(0) \
             if state.coverage is not None else None
@@ -497,7 +512,9 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         # input at every time step.
         for i, emb_t in enumerate(emb.split(1)):
             emb_t = emb_t.squeeze(0)
-            decoder_input = torch.cat([emb_t, input_feed], 1)
+            emb_hard_attr_t = emb_hard_attr[i].squeeze(0)
+            emb_hard_val_t = emb_hard_val[i].squeeze(0)
+            decoder_input = torch.cat([emb_t, emb_hard_attr_t, emb_hard_val_t, input_feed], 1)
 
             rnn_output, hidden = self.rnn(decoder_input, hidden)
             decoder_output, p_attn = self.attn(
@@ -567,7 +584,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         """
         Using input feed by concatenating input with attention vectors.
         """
-        return self.embeddings.embedding_size + self.hidden_size
+        return self.embeddings.embedding_size * 3 + self.hidden_size
 
 
 class NMTModel(nn.Module):
@@ -587,7 +604,7 @@ class NMTModel(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def forward(self, src, tgt, lengths, dec_state=None):
+    def forward(self, src, tgt, lengths, hard_monotonic_attn_over, dec_state=None):
         """Forward propagate a `src` and `tgt` pair for training.
         Possible initialized with a beginning decoder state.
 
@@ -616,7 +633,7 @@ class NMTModel(nn.Module):
         decoder_outputs, dec_state, attns = \
             self.decoder(tgt, memory_bank,
                          enc_state if dec_state is None
-                         else dec_state,
+                         else dec_state, hard_monotonic_attn_over,
                          memory_lengths=lengths)
         if self.multigpu:
             # Not yet supported on multi-gpu

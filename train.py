@@ -357,10 +357,13 @@ def evaluate(opt_translates):
         with open(opt_translate.output, 'r') as handle:
             lines = [line.strip() for line in handle]
             for i, l in enumerate(lines):
-                di = opt.parser.dev_src_to_di[opt_translate.predicate][src_lines[i].strip()]
+                src_line = src_lines[i].strip()
+                if "@noneAttr@" in src_line:
+                    src_line = src_line[:src_line.index("@noneAttr@")].strip()
+                di = opt.parser.dev_src_to_di[opt_translate.predicate][src_line]
                 lexicalized_l = lexicalize_word_sequence(l.split(), di.input.delexicalizationMap)
 
-                stats = '\nsrc:' + str(src_lines[i]) + '\nMR:' + str(di.input.attributeValues) + '\nREAL: ' + ' '.join(lexicalized_l) + '\nDREF: ' + str(di.directReference)
+                stats = '\nsrc:' + str(src_line) + '\nMR:' + str(di.input.attributeValues) + '\nREAL: ' + ' '.join(lexicalized_l) + '\nDREF: ' + str(di.directReference)
                 logger.info(stats)
 
                 eval_stats.append(di.output.evaluateAgainst(lexicalized_l))

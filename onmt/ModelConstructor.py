@@ -183,6 +183,7 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
 
     decoder = make_decoder(model_opt, tgt_embeddings)
     decoder.shift_idx = fields["tgt"].vocab.stoi['@shift@']
+    decoder.hard_mono_embeddings = src_embeddings
 
     # Make NMTModel(= encoder + decoder).
     model = NMTModel(encoder, decoder)

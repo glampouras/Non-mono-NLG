@@ -232,8 +232,9 @@ class Trainer(object):
 
             tgt = onmt.io.make_features(batch, 'tgt')
 
+            hard_mono_batch_attr, hard_mono_batch_val = self.create_hard_monotonic_attn_vectors(onmt.io.make_features(batch, 'src'), tgt)
             # F-prop through the model.
-            outputs, attns, _ = self.model(src, tgt, src_lengths)
+            outputs, attns, _ = self.model(src, tgt, src_lengths, (hard_mono_batch_attr, hard_mono_batch_val))
 
             # Compute loss.
             batch_stats = self.valid_loss.monolithic_compute_loss(
@@ -291,6 +292,28 @@ class Trainer(object):
                           valid_stats.ppl(), epoch))
             '''
 
+    def create_hard_monotonic_attn_vectors(self, src_outer, tgt_outer):
+        hard_mono_batch_attr = []
+        hard_mono_batch_val = []
+        agenda_index = {}
+        for bat in tgt_outer:
+            hard_batch_attr = []
+            hard_batch_val = []
+            for b, tok in enumerate(bat):
+                if b not in agenda_index:
+                    agenda_index[b] = 0
+                if agenda_index[b] < len(src_outer):
+                    hard_batch_attr.append(src_outer[agenda_index[b]][b][0])
+                    hard_batch_val.append(src_outer[agenda_index[b] + 1][b][0])
+                if tok == self.model.decoder.shift_idx:
+                    agenda_index[b] += 2
+            hard_mono_batch_attr.append(torch.LongTensor(hard_batch_attr).view(-1, 1).cuda())
+            hard_mono_batch_val.append(torch.LongTensor(hard_batch_val).view(-1, 1).cuda())
+        hard_mono_batch_attr = torch.stack(hard_mono_batch_attr)
+        hard_mono_batch_val = torch.stack(hard_mono_batch_val)
+
+        return hard_mono_batch_attr, hard_mono_batch_val
+
     def _gradient_accumulation(self, true_batchs, total_stats,
                                report_stats, normalization, fields):
         if self.grad_accum_count > 1:
@@ -312,28 +335,80 @@ class Trainer(object):
             else:
                 src_lengths = None
             tgt_outer = onmt.io.make_features(batch, 'tgt')
+
+            hard_mono_batch_attr, hard_mono_batch_val = self.create_hard_monotonic_attn_vectors(onmt.io.make_features(batch, 'src'), tgt_outer)
             '''
             print("training signal")
+            vocab = fields["src"].vocab
+            src_tokens = {}
+            src_outer = onmt.io.make_features(batch, 'src')
+            for bat in src_outer:
+                for b, tok in enumerate(bat):
+                    if b not in src_tokens:
+                        src_tokens[b] = []
+                    if tok < len(vocab):
+                        src_tokens[b].append(vocab.itos[tok])
+            for b in src_tokens:
+                print(src_tokens[b])
             vocab = fields["tgt"].vocab
-            tokens = []
-            for tok in tgt_outer:
-                if tok < len(vocab):
-                    tokens.append(vocab.itos[tok])
-                if tokens[-1] == onmt.io.EOS_WORD:
-                    tokens = tokens[:-1]
-                    break
-            print(tokens)
+            tgt_tokens = {}
+            for bat in tgt_outer:
+                for b, tok in enumerate(bat):
+                    if b not in tgt_tokens:
+                        tgt_tokens[b] = []
+                    if tok < len(vocab):
+                        tgt_tokens[b].append(vocab.itos[tok])
+                    if tgt_tokens[b][-1] == onmt.io.EOS_WORD:
+                        tgt_tokens[b] = tgt_tokens[b][:-1]
+                        break
+            print(tgt_outer)
+            print('=========')
+            for b in tgt_tokens:
+                print(tgt_tokens[b])
+            hard_tokens = {}
+            agenda_index = {}
+            for bat in tgt_outer:
+                for b, tok in enumerate(bat):
+                    if b not in agenda_index:
+                        agenda_index[b] = 0
+                    if b not in hard_tokens:
+                        hard_tokens[b] = []
+                    if tok < len(vocab) and agenda_index[b] < len(src_outer):
+                        hard_tokens[b].append((src_outer[agenda_index[b]][b][0].item(), src_outer[agenda_index[b] + 1][b][0].item()))
+                    if tok == self.model.decoder.shift_idx:
+                        agenda_index[b] += 2
+            print('=========')
+            for b in hard_tokens:
+                print(hard_tokens[b])
             '''
-
             for j in range(0, target_size - 1, trunc_size):
                 # 1. Create truncated target.
                 tgt = tgt_outer[j: j + trunc_size]
+                hard_attr = hard_mono_batch_attr[j: j + trunc_size]
+                hard_val = hard_mono_batch_val[j: j + trunc_size]
+
+                '''
+                tgt_tokens = {}
+                for bat in tgt:
+                    for b, tok in enumerate(bat):
+                        if b not in tgt_tokens:
+                            tgt_tokens[b] = []
+                        if tok < len(vocab):
+                            tgt_tokens[b].append(vocab.itos[tok])
+                        if tgt_tokens[b][-1] == onmt.io.EOS_WORD:
+                            tgt_tokens[b] = tgt_tokens[b][:-1]
+                            break
+                print('=========')
+                for b in tgt_tokens:
+                    print(tgt_tokens[b])
+                exit()
+                '''
 
                 # 2. F-prop all but generator.
                 if self.grad_accum_count == 1:
                     self.model.zero_grad()
                 outputs, attns, dec_state = \
-                    self.model(src, tgt, src_lengths, dec_state)
+                    self.model(src, tgt, src_lengths, (hard_attr, hard_val), dec_state)
 
                 # 3. Compute loss in shards for memory efficiency.
                 batch_stats = self.train_loss.sharded_compute_loss(

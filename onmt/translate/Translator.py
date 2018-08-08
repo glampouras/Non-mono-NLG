@@ -271,7 +271,7 @@ class Translator(object):
 
         # (0) Prep each of the components of the search.
         # And helper method for reducing verbosity.
-        beam_size = self.beam_size
+        beam_size = 1# self.beam_size
         batch_size = batch.batch_size
         data_type = data.data_type
         vocab = self.fields["tgt"].vocab
@@ -321,6 +321,25 @@ class Translator(object):
                                                   .long()\
                                                   .fill_(memory_bank.size(0))
 
+        # (1.5) Create hard monotonic attention vectors, and agenda
+        hard_mono_batch_attr = []
+        hard_mono_batch_val = []
+        agenda_index = {}
+
+        hard_batch_attr = []
+        hard_batch_val = []
+        for batch_index, tok in enumerate(src[0]):
+            if batch_index not in agenda_index:
+                agenda_index[batch_index] = 0
+            if agenda_index[batch_index] < len(src):
+                hard_batch_attr.append(src[agenda_index[batch_index]][batch_index][0])
+                hard_batch_val.append(src[agenda_index[batch_index] + 1][batch_index][0])
+        hard_mono_batch_attr.append(torch.LongTensor(hard_batch_attr).view(-1, 1).cuda())
+        hard_mono_batch_val.append(torch.LongTensor(hard_batch_val).view(-1, 1).cuda())
+
+        hard_mono_batch_attr = torch.stack(hard_mono_batch_attr)
+        hard_mono_batch_val = torch.stack(hard_mono_batch_val)
+
         # (2) Repeat src objects `beam_size` times.
         src_map = rvar(batch.src_map.data) \
             if data_type == 'text' and self.copy_attn else None
@@ -328,6 +347,9 @@ class Translator(object):
         memory_lengths = src_lengths.repeat(beam_size)
         dec_states.repeat_beam_size_times(beam_size)
 
+        # (2.5) Repeat hard mono objects `beam_size` times.
+        hard_mono_batch_attr = rvar(hard_mono_batch_attr.data)
+        hard_mono_batch_val = rvar(hard_mono_batch_val.data)
         # (3) run the decoder to generate sentences, using beam search.
         for i in range(self.max_length):
             if all((b.done() for b in beam)):
@@ -350,7 +372,7 @@ class Translator(object):
 
             # Run one step.
             dec_out, dec_states, attn = self.model.decoder(
-                inp, memory_bank, dec_states, memory_lengths=memory_lengths)
+                inp, memory_bank, dec_states, (hard_mono_batch_attr, hard_mono_batch_val), memory_lengths=memory_lengths)
             dec_out = dec_out.squeeze(0)
             # dec_out: beam x rnn_size
 
@@ -376,7 +398,25 @@ class Translator(object):
                 b.advance(out[:, j],
                           beam_attn.data[:, j, :memory_lengths[j]])
                 dec_states.beam_update(j, b.get_current_origin(), beam_size)
+                if b.next_ys[-1][0] == self.model.decoder.shift_idx:
+                    agenda_index[j] += 2
 
+            # (d) Update hard monotonic attention.
+            hard_mono_batch_attr = []
+            hard_mono_batch_val = []
+            hard_batch_attr = []
+            hard_batch_val = []
+            for batch_index in agenda_index:
+                if agenda_index[batch_index] < len(src):
+                    hard_batch_attr.append(src[agenda_index[batch_index]][batch_index][0])
+                    hard_batch_val.append(src[agenda_index[batch_index] + 1][batch_index][0])
+                else:
+                    hard_batch_attr.append(src[-1][batch_index][0])
+                    hard_batch_val.append(src[-1][batch_index][0])
+            hard_mono_batch_attr.append(torch.LongTensor(hard_batch_attr).view(-1, 1).cuda())
+            hard_mono_batch_val.append(torch.LongTensor(hard_batch_val).view(-1, 1).cuda())
+            hard_mono_batch_attr = torch.stack(hard_mono_batch_attr)
+            hard_mono_batch_val = torch.stack(hard_mono_batch_val)
         # (4) Extract sentences from beam.
         ret = self._from_beam(beam)
         ret["gold_score"] = [0] * batch_size
@@ -416,12 +456,31 @@ class Translator(object):
         dec_states = \
             self.model.decoder.init_decoder_state(src, memory_bank, enc_states)
 
+        hard_mono_batch_attr = []
+        hard_mono_batch_val = []
+        agenda_index = {}
+        for bat in tgt_in:
+            hard_batch_attr = []
+            hard_batch_val = []
+            for b, tok in enumerate(bat):
+                if b not in agenda_index:
+                    agenda_index[b] = 0
+                if agenda_index[b] < len(src):
+                    hard_batch_attr.append(src[agenda_index[b]][b][0])
+                    hard_batch_val.append(src[agenda_index[b] + 1][b][0])
+                if tok == self.model.decoder.shift_idx:
+                    agenda_index[b] += 2
+            hard_mono_batch_attr.append(torch.LongTensor(hard_batch_attr).view(-1, 1).cuda())
+            hard_mono_batch_val.append(torch.LongTensor(hard_batch_val).view(-1, 1).cuda())
+        hard_mono_batch_attr = torch.stack(hard_mono_batch_attr)
+        hard_mono_batch_val = torch.stack(hard_mono_batch_val)
+
         #  (2) if a target is specified, compute the 'goldScore'
         #  (i.e. log likelihood) of the target under the model
         tt = torch.cuda if self.cuda else torch
         gold_scores = tt.FloatTensor(batch.batch_size).fill_(0)
         dec_out, _, _ = self.model.decoder(
-            tgt_in, memory_bank, dec_states, memory_lengths=src_lengths)
+            tgt_in, memory_bank, dec_states, (hard_mono_batch_attr, hard_mono_batch_val), memory_lengths=src_lengths)
 
         tgt_pad = self.fields["tgt"].vocab.stoi[onmt.io.PAD_WORD]
         for dec, tgt in zip(dec_out, batch.tgt[1:].data):
